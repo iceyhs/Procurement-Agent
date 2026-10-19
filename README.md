@@ -23,6 +23,20 @@ Alternatively export OPENROUTER_API_KEY and OPENROUTER_MODEL directly. HTTPS acc
 to openrouter.ai and an account with access/credits for the selected model are
 required. Each check/review sends a real API request and may incur charges.
 
+## Interactive chat
+
+After installing the project and filling in `.env`, run from the repository root:
+
+```bash
+.venv/bin/python main.py
+```
+
+This entry point automatically loads `.env` without overriding existing process
+variables. Enter a question at `You:`; type `exit` or `quit` to leave. Conversation
+history is kept in memory for this session and sent with each question; it is not
+saved between runs. Each turn may incur API charges. Quotes must be provided in
+the conversation; the agent does not automatically read repository files.
+
 ## Review a packet
 
 ```bash

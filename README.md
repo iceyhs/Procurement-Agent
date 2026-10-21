@@ -140,6 +140,18 @@ Model responses use JSON contracts. Each extracted field is
 `{"value": "...", "evidence": "exact source excerpt"}` or
 `{"value": null, "evidence": null}`. Prices retain their original denominator
 until the harness calculates per-piece amounts. Numeric fields use decimal strings.
+Both review calls send `response_format: json_schema` with `strict: true` and
+`provider.require_parameters: true`, using schemas built from the same field
+definitions as local validation. Every fact must be an object, even when unknown;
+bare strings or nulls in place of fact objects are invalid. Local validation still
+checks evidence, numeric support, and conditions after structured generation.
+
+Review requires a model/provider endpoint supporting JSON Schema structured outputs.
+The default `openai/gpt-4o-mini` supports this parameter. Unsupported endpoint/schema
+errors stop the run with an actionable message; there is no silent plain-text
+fallback. Chat and the connection check remain plain-text requests and do not
+establish structured-output readiness. See OpenRouter's
+[structured-output documentation](https://openrouter.ai/docs/guides/features/structured-outputs).
 
 Normally there are two model calls: extraction, then analysis of validated facts
 and calculations. At most one additional correction call is allowed across both

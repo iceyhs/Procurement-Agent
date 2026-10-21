@@ -27,15 +27,22 @@ class OpenRouterClient:
             raise OpenRouterError("Set OPENROUTER_MODEL to an OpenRouter model ID.")
         return cls(api_key=key, model=model)
 
-    def complete(self, messages: list[dict[str, str]], *, max_tokens: int = 1500) -> str:
+    def complete(
+        self, messages: list[dict[str, str]], *, max_tokens: int = 1500,
+        response_format: dict | None = None,
+    ) -> str:
+        body = {
+            "model": self.model, "messages": messages,
+            "max_tokens": max_tokens, "stream": False,
+        }
+        if response_format is not None:
+            body["response_format"] = response_format
+            # Do not silently route structured reviews to endpoints that ignore
+            # response_format. Chat and connection checks remain plain text.
+            body["provider"] = {"require_parameters": True}
         request = Request(
             "https://openrouter.ai/api/v1/chat/completions",
-            data=json.dumps({
-                "model": self.model,
-                "messages": messages,
-                "max_tokens": max_tokens,
-                "stream": False,
-            }).encode(),
+            data=json.dumps(body).encode(),
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
@@ -54,6 +61,12 @@ class OpenRouterClient:
                 403: "Check account permissions and network policy.",
                 429: "Rate limited; retry later.",
             }.get(exc.code, "Check model availability or retry later.")
+            if response_format is not None and exc.code in {400, 404, 422}:
+                hint = (
+                    "Review requires a model/provider supporting response_format=json_schema. "
+                    "Check structured-output support, model availability, and schema compatibility. "
+                    "No plain-text fallback or automatic retry was made."
+                )
             raise OpenRouterError(f"OpenRouter HTTP {exc.code}. {hint}") from None
         except TimeoutError:
             raise OpenRouterError(

@@ -26,6 +26,53 @@ INTEGER_FIELDS = {"quantity", "price_basis_quantity", "annual_volume", "moq", "m
 MAX_RESPONSE_CHARS = 150_000
 
 
+def _object_schema(properties):
+    return {
+        "type": "object", "properties": properties,
+        "required": list(properties), "additionalProperties": False,
+    }
+
+
+def _structured_format(name, schema):
+    return {"type": "json_schema", "json_schema": {"name": name, "strict": True, "schema": schema}}
+
+
+def extraction_format(source_ids: list[str]) -> dict:
+    """API contract: every fact is an object, including unknown facts."""
+    fact = _object_schema({
+        "value": {"type": ["string", "null"], "description": "Extracted value; numeric values are decimal strings. Null when unknown."},
+        "evidence": {"type": ["string", "null"], "description": "Exact excerpt from this fact's own source. Null when value is null."},
+    })
+    schema = _object_schema({
+        "buyer": _object_schema({field: {"$ref": "#/$defs/fact"} for field in BUYER_FIELDS}),
+        "suppliers": {
+            "type": "array",
+            "items": _object_schema({
+                "source_id": {"type": "string", "enum": source_ids},
+                **{field: {"$ref": "#/$defs/fact"} for field in SUPPLIER_FIELDS},
+            }),
+        },
+    })
+    schema["$defs"] = {"fact": fact}
+    return _structured_format("procurement_extraction", schema)
+
+
+def analysis_format(source_ids: list[str]) -> dict:
+    item = {
+        "text": {"type": "string", "description": "Plain-prose assessment grounded in the referenced facts and calculations."},
+        "source_ids": {"type": "array", "items": {"type": "string", "enum": source_ids}},
+    }
+    return _structured_format("procurement_analysis", _object_schema({
+        "risks": {"type": "array", "items": _object_schema(item)},
+        "recommendation": {"type": "array", "items": _object_schema(item)},
+        "follow_up_questions": {
+            "type": "array", "items": _object_schema({
+                **item, "owner": {"type": "string", "enum": source_ids},
+            }),
+        },
+    }))
+
+
 class ValidationError(ValueError):
     """A safe, bounded description of an invalid model response."""
 
@@ -35,8 +82,14 @@ def _fail(message: str):
 
 
 def _keys(value, expected, location):
-    if not isinstance(value, dict) or set(value) != set(expected):
-        _fail(f"{location}: expected exactly the documented fields.")
+    fields = ", ".join(expected)
+    if not isinstance(value, dict):
+        _fail(f"{location}: expected an object with fields [{fields}]; got {type(value).__name__}.")
+    if set(value) != set(expected):
+        # Report shape only, never field values or an unbounded model-supplied key.
+        keys = [key if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,40}", key)
+                else "<nonstandard key>" for key in list(value)[:8]]
+        _fail(f"{location}: expected fields [{fields}]; got fields [{', '.join(keys)}].")
 
 
 def _unique_object(pairs):

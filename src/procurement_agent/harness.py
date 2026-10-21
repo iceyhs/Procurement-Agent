@@ -4,7 +4,10 @@ import json
 from dataclasses import dataclass
 
 from .prompts import ANALYSIS_PROMPT, EXTRACTION_PROMPT
-from .schema import MAX_RESPONSE_CHARS, ValidationError, load_response, validate_analysis, validate_extraction
+from .schema import (
+    MAX_RESPONSE_CHARS, ValidationError, analysis_format, extraction_format,
+    load_response, validate_analysis, validate_extraction,
+)
 from .tools.calculations import calculate_amounts
 from .tools.packet import Packet, parse_packet
 from .tools.report import render_report
@@ -29,7 +32,7 @@ class ReviewHarness:
         if self.on_progress is not None:
             self.on_progress(message)
 
-    def _request(self, state, prompt, payload, validator, max_tokens, stage):
+    def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format):
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -38,7 +41,9 @@ class ReviewHarness:
             state.model_calls += 1
             self._progress(f"{stage}: waiting for model response (request {state.model_calls}/3)...")
             # Transport/provider errors propagate. They are never retried automatically.
-            response = self.client.complete(messages, max_tokens=max_tokens)
+            response = self.client.complete(
+                messages, max_tokens=max_tokens, response_format=response_format,
+            )
             self._progress(f"{stage}: validating response...")
             try:
                 return validator(load_response(response), state.packet.sources)
@@ -64,6 +69,7 @@ class ReviewHarness:
         state.extraction = self._request(
             state, EXTRACTION_PROMPT, {"sources": state.packet.sources},
             validate_extraction, max_tokens=14000, stage="Extraction",
+            response_format=extraction_format(list(state.packet.sources)[1:]),
         )
         self._progress("Calculating normalized prices and conditional amounts...")
         state.calculations = calculate_amounts(state.extraction)
@@ -71,6 +77,7 @@ class ReviewHarness:
             state, ANALYSIS_PROMPT,
             {"extraction": state.extraction, "calculations": state.calculations},
             validate_analysis, max_tokens=6000, stage="Analysis",
+            response_format=analysis_format(list(state.packet.sources)),
         )
         self._progress("Rendering the report...")
         return render_report(state.extraction, state.calculations, state.analysis)

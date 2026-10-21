@@ -6,6 +6,7 @@ from urllib.error import HTTPError, URLError
 
 from procurement_agent.cli import main
 from procurement_agent.openrouter import OpenRouterClient, OpenRouterError
+from procurement_agent.schema import extraction_format
 
 
 class OpenRouterTests(unittest.TestCase):
@@ -22,7 +23,29 @@ class OpenRouterTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://openrouter.ai/api/v1/chat/completions")
         self.assertEqual(request.get_header("Authorization"), "Bearer test-secret")
         self.assertEqual(json.loads(request.data)["model"], "test/model")
+        self.assertNotIn("response_format", json.loads(request.data))
+        self.assertNotIn("provider", json.loads(request.data))
         self.assertNotIn("test-secret", repr(self.client))
+
+    @patch("procurement_agent.openrouter.urlopen")
+    def test_structured_request_includes_schema_and_requires_parameter_support(self, send):
+        send.return_value.__enter__.return_value = io.BytesIO(json.dumps({
+            "choices": [{"finish_reason": "stop", "message": {"content": "{}"}}],
+        }).encode())
+        contract = extraction_format(["supplier_1"])
+        self.client.complete([], response_format=contract)
+        body = json.loads(send.call_args.args[0].data)
+        self.assertEqual(body["response_format"], contract)
+        self.assertTrue(body["response_format"]["json_schema"]["strict"])
+        self.assertEqual(body["provider"], {"require_parameters": True})
+
+    @patch("procurement_agent.openrouter.urlopen")
+    def test_unsupported_structured_output_does_not_fall_back(self, send):
+        send.side_effect = HTTPError("url", 404, "sensitive-provider-body", {}, None)
+        with self.assertRaisesRegex(OpenRouterError, "supporting response_format=json_schema") as error:
+            self.client.complete([], response_format=extraction_format(["supplier_1"]))
+        self.assertEqual(send.call_count, 1)
+        self.assertNotIn("sensitive-provider-body", str(error.exception))
 
     @patch("procurement_agent.openrouter.urlopen")
     def test_http_error_does_not_expose_response_body(self, send):

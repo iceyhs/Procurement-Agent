@@ -12,7 +12,7 @@ from procurement_agent.agent import ProcurementAgent
 from procurement_agent.cli import main
 from procurement_agent.openrouter import OpenRouterError
 from procurement_agent.schema import (
-    BUYER_FIELDS, SUPPLIER_FIELDS, ValidationError, load_response, validate_analysis,
+    BUYER_FIELDS, SUPPLIER_FIELDS, ValidationError, analysis_format, extraction_format, load_response, validate_analysis,
     validate_extraction,
 )
 from procurement_agent.tools.calculations import calculate_amounts
@@ -178,6 +178,23 @@ class ExtractionTests(unittest.TestCase):
         self.assertIn("supplier_1.revision", str(error.exception))
         self.assertIn("supplier_3.quoted_price", str(error.exception))
 
+    def test_raw_values_instead_of_fact_objects_have_actionable_shape_errors(self):
+        for field in BUYER_FIELDS:
+            self.data["buyer"][field] = self.data["buyer"][field]["value"]
+        with self.assertRaises(ValidationError) as error:
+            validate_extraction(self.data, self.sources)
+        message = str(error.exception)
+        self.assertIn("buyer.part: expected an object with fields [value, evidence]; got str", message)
+        self.assertIn("buyer.revision: expected an object with fields [value, evidence]; got NoneType", message)
+        self.assertNotIn("BRK-4471-A", message)
+
+    def test_extra_fact_keys_are_reported_without_logging_values(self):
+        self.data["buyer"]["part"]["confidence"] = "sensitive model output"
+        with self.assertRaises(ValidationError) as error:
+            validate_extraction(self.data, self.sources)
+        self.assertIn("got fields [value, evidence, confidence]", str(error.exception))
+        self.assertNotIn("sensitive model output", str(error.exception))
+
     def test_reject_number_without_supporting_evidence(self):
         self.data["suppliers"][2]["quoted_price"]["value"] = "3.24"
         with self.assertRaisesRegex(ValidationError, "numeric value"):
@@ -264,6 +281,11 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn(expected, report)
         analysis_input = json.loads(client.complete.call_args_list[1].args[0][1]["content"])
         self.assertEqual(analysis_input["calculations"][2]["quantity_price_extension"], "194400")
+        for index, name in enumerate(("procurement_extraction", "procurement_analysis")):
+            contract = client.complete.call_args_list[index].kwargs["response_format"]
+            self.assertEqual(contract["type"], "json_schema")
+            self.assertEqual(contract["json_schema"]["name"], name)
+            self.assertTrue(contract["json_schema"]["strict"])
 
     def test_one_correction_then_success(self):
         client = self.client("invalid json", json.dumps(self.extraction), json.dumps(self.analysis))
@@ -271,6 +293,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(client.complete.call_count, 3)
         self.assertIn("failed validation", client.complete.call_args_list[1].args[0][-1]["content"])
         self.assertEqual(client.complete.call_args_list[1].args[0][-2], {"role": "assistant", "content": "invalid json"})
+        self.assertEqual(client.complete.call_args_list[0].kwargs["response_format"],
+                         client.complete.call_args_list[1].kwargs["response_format"])
 
     def test_progress_is_emitted_before_each_model_request(self):
         events = []
@@ -375,11 +399,50 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(main(["review", str(EXAMPLE), "--output", str(output)]), 0)
             self.assertIn("## 4. Follow-up questions", output.read_text())
             self.assertEqual(send.call_count, 2)
-            for call in send.call_args_list:
+            for index, call in enumerate(send.call_args_list):
                 request = json.loads(call.args[0].data)
                 self.assertEqual(request["model"], "test/model")
                 self.assertNotIn("tools", request)
+                self.assertEqual(request["response_format"]["type"], "json_schema")
+                name = "procurement_extraction" if index == 0 else "procurement_analysis"
+                self.assertEqual(request["response_format"]["json_schema"]["name"], name)
+                self.assertEqual(request["provider"], {"require_parameters": True})
 
+
+class StructuredContractTests(unittest.TestCase):
+    def test_extraction_contract_covers_all_fields_with_required_fact_objects(self):
+        contract = extraction_format(["supplier_1", "supplier_2"])
+        schema = contract["json_schema"]["schema"]
+        self.assertEqual(set(schema["required"]), {"buyer", "suppliers"})
+        buyer = schema["properties"]["buyer"]
+        self.assertEqual(set(buyer["properties"]), set(BUYER_FIELDS))
+        self.assertEqual(set(buyer["required"]), set(BUYER_FIELDS))
+        supplier = schema["properties"]["suppliers"]["items"]
+        self.assertEqual(set(supplier["properties"]), {*SUPPLIER_FIELDS, "source_id"})
+        self.assertEqual(supplier["properties"]["source_id"]["enum"], ["supplier_1", "supplier_2"])
+        fact_schema = schema["$defs"]["fact"]
+        self.assertEqual(fact_schema["type"], "object")
+        self.assertEqual(set(fact_schema["required"]), {"value", "evidence"})
+        self.assertEqual(fact_schema["properties"]["value"]["type"], ["string", "null"])
+        self.assertEqual(buyer["properties"]["part"], {"$ref": "#/$defs/fact"})
+        self.assertFalse(schema["additionalProperties"])
+        self.assertFalse(buyer["additionalProperties"])
+        self.assertFalse(supplier["additionalProperties"])
+        self.assertFalse(fact_schema["additionalProperties"])
+
+    def test_analysis_contract_uses_case_source_ids(self):
+        sources = ["buyer", "supplier_1"]
+        schema = analysis_format(sources)["json_schema"]["schema"]
+        self.assertEqual(set(schema["required"]), {"risks", "recommendation", "follow_up_questions"})
+        for section in schema["properties"].values():
+            item = section["items"]
+            self.assertFalse(item["additionalProperties"])
+            self.assertEqual(item["properties"]["source_ids"]["items"]["enum"], sources)
+        follow_up = schema["properties"]["follow_up_questions"]["items"]
+        self.assertEqual(follow_up["properties"]["owner"]["enum"], sources)
+
+
+class ReportWriteTests(unittest.TestCase):
     def test_atomic_write_does_not_clobber_existing_file(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.md"

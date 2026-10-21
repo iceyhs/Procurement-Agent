@@ -42,6 +42,20 @@ validated extraction, deterministic calculations, and four-section report.
 
 ## Review a packet
 
+Using `main.py` automatically loads the repository's `.env`, preserving existing
+process variables, and runs the same CLI and harness:
+
+```bash
+.venv/bin/python main.py review examples/quote_packet.txt -o report.md
+# For your own input:
+.venv/bin/python main.py review quote_packet.txt -o report.md
+```
+
+`main.py check` runs the connection check; `main.py --help` shows CLI options.
+Running `main.py` without arguments still opens interactive chat.
+
+Alternatively, use the installed command after exporting the configuration:
+
 ```bash
 .venv/bin/procurement-agent review examples/quote_packet.txt
 # Or use your own input and output paths:

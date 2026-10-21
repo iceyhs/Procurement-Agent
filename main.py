@@ -1,16 +1,22 @@
-"""Run an interactive procurement chat: python main.py."""
+"""Load .env, then run CLI arguments or interactive chat when none are given."""
 
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
 
+from procurement_agent.cli import main as cli_main
 from procurement_agent.prompts import CHAT_PROMPT
 from procurement_agent.openrouter import OpenRouterClient, OpenRouterError
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     # Existing process configuration takes precedence over the local file.
     load_dotenv(Path(__file__).resolve().parent / ".env", override=False)
+    args = sys.argv[1:] if argv is None else argv
+    if args:
+        return cli_main(args)
+
     try:
         client = OpenRouterClient.from_env()
     except OpenRouterError as exc:

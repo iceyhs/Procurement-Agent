@@ -20,23 +20,28 @@ exchange rates, requirements, or costs. Return only the requested JSON object.
 EXTRACTION_PROMPT = BOUNDARY + """
 Extract buyer requirements only from source 'buyer'; do not infer requirements
 from supplier offers. Extract exactly one supplier record for each supplier source.
-The response shape is {"buyer": {...}, "suppliers": [{"source_id": "supplier_1", ...}]}.
+The response shape is {"buyer": {...}, "suppliers": {"supplier_1": {...}, "supplier_2": {...}}}.
+Include exactly the supplier keys provided in the source map. Do not return an
+array, omit a supplier, duplicate one, or add source_id fields inside records.
 Buyer fields: """ + ", ".join(BUYER_FIELDS) + ".\nSupplier fields: " + ", ".join(SUPPLIER_FIELDS) + """.
-Include every field, and no extra fields. Except source_id, every field is a fact:
-{"value": "string", "evidence": "short exact excerpt from that source"}.
-Use {"value": null, "evidence": null} for missing information. Evidence must be
-copied from its own source, with no ellipsis or paraphrase. Do not use another
-supplier's terms to fill gaps. Values may summarize terms but must preserve
-qualifications, exclusions, starting conditions, and uncertainty.
-For part, cite the exact identifier itself (for example BRK-4471-A), including
-when it occurs only in an email subject. Never add an invented 'Part:' label to
-the evidence. If a supplier source contains no part identifier, leave its part null.
+Include every field, and no extra fields. Every field is a fact:
+{"value": "extracted string", "evidence": "L3"}, or cite a contiguous range as L3-L5.
+The supplied sources have numbered lines. Cite the shortest line range supporting
+the ENTIRE value within the same buyer/supplier source. The harness will copy the
+original text; do not copy or paraphrase excerpts into evidence. Do not include
+source IDs in the line reference. For unknown or unsupported information, use
+{"value": null, "evidence": null}; never use empty strings, 'not stated', 'N/A',
+or explanatory prose as a fact value for missing information. Do not use another
+supplier's terms to fill gaps. Values may summarize supported terms but must
+preserve qualifications, exclusions, starting conditions, and uncertainty.
+For part, cite the line containing the identifier, including an email subject.
+If a supplier source contains no part identifier, leave its part null.
 
 Numeric fact values must be decimal strings without currency or grouping commas.
 quantity, price_basis_quantity, annual_volume, moq, min_release are positive integers.
 Keep quoted_price in its ORIGINAL basis: USD 3,240 / 1,000 pcs means quoted_price
 "3240" and price_basis_quantity "1000", not a computed per-piece price. Per piece
-means price_basis_quantity "1", citing the per-piece phrase. Do not calculate.
+means price_basis_quantity "1", citing the line with the per-piece phrase. Do not calculate.
 For quantity_basis use annual, order, or unspecified; if the buyer says only
 '60,000 units', use unspecified. Do not infer annual demand from supplier text.
 
@@ -52,6 +57,9 @@ tooling_amount is a separately payable tooling charge, never a value already
 included in unit pricing. Preserve recurring tooling rates in tooling_terms rather
 than treating them as one-time amounts. deposit_amount is only the refundable
 packaging/container deposit, never an advance-payment percentage or prepayment.
+MOQs and minimum releases are distinct: a minimum release is not an MOQ. Leave
+moq null unless the supplier explicitly states a minimum order quantity. Cite
+numeric values on lines that contain the actual amount, not a nearby heading.
 
 Capture conditions in price_qualification, tooling_terms, deposit_terms,
 delivery_terms, lead_time, payment_terms, validity, price_adjustment, other_terms.
@@ -74,6 +82,11 @@ Each list must have 1 to 40 items. Use only provided source IDs. Include targete
 questions for the buyer and EVERY supplier. Order risks and questions by decision
 impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
 Markdown headings, HTML, tables, or an alternative report.
+The extraction may contain harness-generated validation_warnings. Those fields
+were excluded because their evidence was invalid. Treat them as unresolved,
+mention material exclusions, ask targeted verification questions, and do not
+reconstruct discarded claims or recommend based on them. Withheld amounts are
+unknown, not zero. Keep the shortlist conditional when validation is incomplete.
 
 Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
 consequential statement must be supported by the referenced sources. Quoted

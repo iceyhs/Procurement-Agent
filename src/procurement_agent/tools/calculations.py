@@ -9,6 +9,8 @@ def calculate_amounts(extraction: dict) -> list[dict]:
     quantity_basis = buyer["quantity_basis"]["value"]
     results = []
     for supplier in extraction["suppliers"]:
+        excluded_fields = {warning["field"] for warning in extraction.get("validation_warnings", [])
+                           if warning["source_id"] == supplier["source_id"]}
         value = lambda field: supplier[field]["value"]
         result = {
             "calculation_id": f"calc_{supplier['source_id']}",
@@ -45,6 +47,9 @@ def calculate_amounts(extraction: dict) -> list[dict]:
             tier_ok = quantity_basis == "annual" and quantity is not None and Decimal(quantity) == Decimal(value("annual_volume"))
             if not tier_ok:
                 warnings.append("Selected annual price tier does not match explicit annual demand; extension withheld.")
+        if excluded_fields & {"annual_volume", "price_qualification", "moq", "min_release", "other_terms"}:
+            tier_ok = False
+            warnings.append("Price extension withheld because extracted pricing or quantity conditions could not be verified.")
         price, basis = value("quoted_price"), value("price_basis_quantity")
         if price is not None and basis is not None:
             with localcontext() as context:
@@ -55,7 +60,7 @@ def calculate_amounts(extraction: dict) -> list[dict]:
                     extension = Decimal(price) * Decimal(quantity) / Decimal(basis)
                     result["quantity_price_extension"] = format(extension, "f")
                     tooling = value("tooling_amount")
-                    if tooling is not None and value("tooling_currency") == value("currency"):
+                    if tooling is not None and value("tooling_currency") == value("currency") and not excluded_fields & {"tooling_amount", "tooling_currency", "tooling_terms"}:
                         result["extension_plus_stated_tooling"] = format(extension + Decimal(tooling), "f")
                         warnings.append("Extension plus tooling assumes one additional tooling charge in this scenario; confirm applicability.")
         if result["quantity_price_extension"] is None:

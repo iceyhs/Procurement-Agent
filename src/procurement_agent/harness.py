@@ -32,7 +32,7 @@ class ReviewHarness:
         if self.on_progress is not None:
             self.on_progress(message)
 
-    def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format):
+    def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format, allow_partial=False):
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
@@ -49,6 +49,14 @@ class ReviewHarness:
                 return validator(load_response(response), state.packet.sources)
             except ValidationError as error:
                 if state.correction_remaining == 0:
+                    if allow_partial:
+                        try:
+                            result = validate_extraction(load_response(response), state.packet.sources, allow_partial=True)
+                        except ValidationError:
+                            raise ValidationError(f"Review stopped after invalid model output: {error}") from None
+                        count = len(result.get("validation_warnings", []))
+                        self._progress(f"Extraction incomplete: excluded {count} unverified fields; see report warnings.")
+                        return result
                     raise ValidationError(f"Review stopped after invalid model output: {error}") from None
                 state.correction_remaining -= 1
                 self._progress(f"{stage}: requesting the one allowed correction ({error})")
@@ -58,8 +66,9 @@ class ReviewHarness:
                     messages.append({"role": "assistant", "content": response})
                 messages.append({"role": "user", "content": (
                     f"The response failed validation: {error} "
-                    "Fix all listed fields. Evidence must be copied verbatim from the field's own source, "
-                    "without paraphrases, inferred labels, or another source's text. "
+                    "Fix all listed fields. Extraction evidence must cite the field's own source lines "
+                    "using L3 or L3-L5, not copied or paraphrased excerpts. "
+                    "When unsupported, use {\"value\": null, \"evidence\": null}. "
                     "Return a complete corrected JSON object using the original sources and contract."
                 )})
 
@@ -67,9 +76,10 @@ class ReviewHarness:
         state = RunState(parse_packet(text))
         self._progress(f"Parsed buyer requirements and {len(state.packet.suppliers)} supplier replies.")
         state.extraction = self._request(
-            state, EXTRACTION_PROMPT, {"sources": state.packet.sources},
+            state, EXTRACTION_PROMPT, {"sources": state.packet.numbered_sources},
             validate_extraction, max_tokens=14000, stage="Extraction",
             response_format=extraction_format(list(state.packet.sources)[1:]),
+            allow_partial=True,
         )
         self._progress("Calculating normalized prices and conditional amounts...")
         state.calculations = calculate_amounts(state.extraction)

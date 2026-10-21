@@ -3,6 +3,7 @@
 Evidence matching establishes traceability, not semantic correctness.
 """
 
+import copy
 import json
 import re
 from decimal import Decimal
@@ -38,22 +39,22 @@ def _structured_format(name, schema):
 
 
 def extraction_format(source_ids: list[str]) -> dict:
-    """API contract: every fact is an object, including unknown facts."""
+    """Named supplier properties enforce exactly one record per source."""
     fact = _object_schema({
-        "value": {"type": ["string", "null"], "description": "Extracted value; numeric values are decimal strings. Null when unknown."},
-        "evidence": {"type": ["string", "null"], "description": "Exact excerpt from this fact's own source. Null when value is null."},
+        "value": {"type": ["string", "null"], "minLength": 1, "description": "Extracted value; numeric values are decimal strings. Null when unknown."},
+        "evidence": {
+            "type": ["string", "null"], "pattern": r"^L[1-9][0-9]*(?:-L[1-9][0-9]*)?$",
+            "description": "Supporting source lines, e.g. L3 or L3-L5, within this record's own source. Null when unknown.",
+        },
     })
     schema = _object_schema({
         "buyer": _object_schema({field: {"$ref": "#/$defs/fact"} for field in BUYER_FIELDS}),
-        "suppliers": {
-            "type": "array",
-            "items": _object_schema({
-                "source_id": {"type": "string", "enum": source_ids},
-                **{field: {"$ref": "#/$defs/fact"} for field in SUPPLIER_FIELDS},
-            }),
-        },
+        "suppliers": _object_schema({source_id: {"$ref": "#/$defs/supplier"} for source_id in source_ids}),
     })
-    schema["$defs"] = {"fact": fact}
+    schema["$defs"] = {
+        "fact": fact,
+        "supplier": _object_schema({field: {"$ref": "#/$defs/fact"} for field in SUPPLIER_FIELDS}),
+    }
     return _structured_format("procurement_extraction", schema)
 
 
@@ -137,8 +138,22 @@ def _fact(value, field, source, location):
         return
     if not isinstance(data, str) or not data.strip() or len(data) > 2000:
         _fail(f"{location}: value must be a nonempty string or null.")
-    if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000:
+    if not isinstance(evidence, str) or not evidence.strip():
         _fail(f"{location}: known values require a short evidence excerpt.")
+    citation = re.fullmatch(r"L([1-9][0-9]*)(?:-L([1-9][0-9]*))?", evidence)
+    if citation:
+        if len(evidence) > 64:
+            _fail(f"{location}: evidence line range is too long.")
+        start, end = int(citation[1]), int(citation[2] or citation[1])
+        lines = source.splitlines()
+        if not 1 <= start <= end <= len(lines):
+            _fail(f"{location}: evidence line range is outside this source.")
+        evidence = "\n".join(lines[start - 1:end])
+        value["evidence"] = evidence
+    if not evidence.strip():
+        _fail(f"{location}: evidence must cite nonempty source text.")
+    if len(evidence) > 2000:
+        _fail(f"{location}: evidence must be at most 2000 characters; cite a shorter line range.")
     if _normalize(evidence) not in _normalize(source):
         # Part identifiers can be cited directly, even if the model added a
         # nonexistent label to its excerpt. This never searches another source
@@ -163,6 +178,8 @@ def _fact(value, field, source, location):
             _fail(f"{location}: numeric value must appear in its evidence.")
     if field == "quantity_basis" and data not in {"annual", "order", "unspecified"}:
         _fail(f"{location}: expected annual, order, or unspecified.")
+    if field == "moq" and not re.search(r"\bMOQ\b|\bminimum\s+(?:order|purchase|quantity|qty)\b", evidence, re.IGNORECASE):
+        _fail(f"{location}: an MOQ needs explicit minimum-order evidence; minimum releases are a separate field.")
     if field in {"currency", "tooling_currency", "deposit_currency"}:
         if not re.fullmatch(r"[A-Z]{3}|\$", data):
             _fail(f"{location}: expected a three-letter currency or ambiguous '$'.")
@@ -171,10 +188,21 @@ def _fact(value, field, source, location):
             _fail(f"{location}: currency must be explicit; bare '$' does not establish USD.")
 
 
-def validate_extraction(data: dict, sources: dict[str, str]) -> dict:
+def validate_extraction(data: dict, sources: dict[str, str], *, allow_partial=False) -> dict:
+    data = copy.deepcopy(data)
     _keys(data, ("buyer", "suppliers"), "extraction")
     _keys(data["buyer"], BUYER_FIELDS, "buyer")
     errors = []
+    warnings = []
+    expected_ids = list(sources)[1:]
+    if isinstance(data["suppliers"], dict):
+        _keys(data["suppliers"], expected_ids, "suppliers")
+        suppliers = []
+        for source_id in expected_ids:
+            record = data["suppliers"][source_id]
+            _keys(record, SUPPLIER_FIELDS, source_id)
+            suppliers.append({"source_id": source_id, **record})
+        data["suppliers"] = suppliers
 
     def check_fact(value, field, source, location):
         try:
@@ -182,12 +210,20 @@ def validate_extraction(data: dict, sources: dict[str, str]) -> dict:
             return True
         except ValidationError as error:
             errors.append(str(error))
+            if allow_partial:
+                source_id = location.split(".")[0]
+                replacement = {"value": None, "evidence": None}
+                record = data["buyer"] if source_id == "buyer" else next(
+                    item for item in data["suppliers"] if item["source_id"] == source_id
+                )
+                record[field] = replacement
+                warnings.append({"source_id": source_id, "field": field, "reason": str(error)})
             return False
 
     for field in BUYER_FIELDS:
         check_fact(data["buyer"][field], field, sources["buyer"], f"buyer.{field}")
     suppliers = data["suppliers"]
-    expected_ids = set(sources) - {"buyer"}
+    expected_ids = set(expected_ids)
     if not isinstance(suppliers, list) or len(suppliers) != len(expected_ids):
         _fail("Include exactly one extraction per supplier source.")
     seen = set()
@@ -199,13 +235,19 @@ def validate_extraction(data: dict, sources: dict[str, str]) -> dict:
         seen.add(source_id)
         valid = [check_fact(item[field], field, sources[source_id], f"{source_id}.{field}")
                  for field in SUPPLIER_FIELDS]
-        if all(valid):
+        if all(valid) or allow_partial:
             known = [item[field]["value"] is not None for field in ("quoted_price", "price_basis_quantity", "currency")]
             if any(known) and not all(known):
                 errors.append(f"{source_id}: price, price basis, and currency must be known together or all null.")
-    if errors:
+                if allow_partial:
+                    for field in ("quoted_price", "price_basis_quantity", "currency"):
+                        item[field] = {"value": None, "evidence": None}
+                    warnings.append({"source_id": source_id, "field": "price", "reason": "Price calculation inputs are incomplete or unverified; all price calculations withheld."})
+    if errors and not allow_partial:
         _fail("Extraction validation failed: " + "; ".join(errors[:12]))
     data["suppliers"].sort(key=lambda item: int(item["source_id"].split("_")[1]))
+    if warnings:
+        data["validation_warnings"] = warnings
     return data
 
 

@@ -127,7 +127,7 @@ cli.py -> agent.py -> harness.py
 - `harness.py`: per-run state, workflow, call budget, and validation policy.
 - `prompts.py`: extraction and analysis instructions.
 - `schema.py`: field contracts, response shape checks, numeric evidence checks,
-  exact-excerpt matching (ignoring whitespace), and source validation.
+  source-line citation resolution, excerpt matching, and source validation.
   A malformed part-number excerpt is replaced with the exact identifier only when
   that identifier occurs as a whole identifier in the same source. Otherwise it
   is rejected. Correction feedback includes the rejected response and up to twelve
@@ -136,15 +136,30 @@ cli.py -> agent.py -> harness.py
   invoked by application code. **No tools are exposed to the model.**
 - `openrouter.py`: HTTPS transport and safe provider errors.
 
-Model responses use JSON contracts. Each extracted field is
-`{"value": "...", "evidence": "exact source excerpt"}` or
-`{"value": null, "evidence": null}`. Prices retain their original denominator
-until the harness calculates per-piece amounts. Numeric fields use decimal strings.
+Model responses use JSON contracts. The harness numbers the original source lines;
+each extracted field is `{"value": "...", "evidence": "L3"}` or cites a contiguous
+range such as `L3-L5`. Unknown facts use `{"value": null, "evidence": null}`. The
+harness resolves line references within that record's own source and retains the
+exact original excerpt in the report. Users do not need to number input lines.
+Supplier records are keyed by their source IDs, with every key required by the
+schema, rather than an array that could omit or duplicate a supplier.
+Prices retain their original denominator until the harness calculates per-piece
+amounts. Numeric fields use decimal strings.
 Both review calls send `response_format: json_schema` with `strict: true` and
 `provider.require_parameters: true`, using schemas built from the same field
 definitions as local validation. Every fact must be an object, even when unknown;
 bare strings or nulls in place of fact objects are invalid. Local validation still
 checks evidence, numeric support, and conditions after structured generation.
+
+After the one allowed correction, remaining invalid facts are excluded and shown
+as **Unverified / excluded**, distinct from terms that were not stated. The report
+has an incomplete-validation notice and a warning for each discarded field. The
+analysis receives only retained facts and warnings, never the discarded claims.
+Invalid price inputs prevent price calculations; unverified price/quantity
+conditions prevent extensions; unverified tooling prevents the tooling scenario.
+Structural errors such as a missing supplier, malformed root response, provider
+failure, or invalid final analysis still stop the run. Evidence checks are not
+weakened to accept unsupported facts, and no extra retry budget is added.
 
 Review requires a model/provider endpoint supporting JSON Schema structured outputs.
 The default `openai/gpt-4o-mini` supports this parameter. Unsupported endpoint/schema

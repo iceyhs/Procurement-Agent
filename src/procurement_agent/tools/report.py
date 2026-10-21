@@ -28,18 +28,28 @@ def _money(amount, currency, places=2):
 
 def render_report(extraction: dict, calculations: list[dict], analysis: dict) -> str:
     suppliers = extraction["suppliers"]
+    validation_warnings = extraction.get("validation_warnings", [])
+    excluded = {(warning["source_id"], warning["field"]) for warning in validation_warnings}
     names = {"buyer": "Buyer"}
     names.update({item["source_id"]: item["supplier"]["value"] or item["source_id"] for item in suppliers})
     evidence = {}
 
     def fact(source_id, field, value):
         if value["value"] is None:
+            if (source_id, field) in excluded or (
+                (source_id, "price") in excluded and field in {"quoted_price", "price_basis_quantity", "currency"}
+            ):
+                return "Unverified / excluded — see warnings"
             return "Unknown / not stated"
         key = f"{source_id}-{field}"
         evidence[key] = value["evidence"]
         return f"{_escape(value['value'])}[^{key}]"
 
-    lines = ["# Procurement report", "", "## 1. Normalized supplier comparison", "", "### Buyer requirements", ""]
+    lines = ["# Procurement report", ""]
+    if validation_warnings:
+        lines += ["**Incomplete evidence validation:** unverified fields were excluded and marked unknown. "
+                  "Affected calculations are withheld. Review the validation warnings before relying on the shortlist.", ""]
+    lines += ["## 1. Normalized supplier comparison", "", "### Buyer requirements", ""]
     for field, value in extraction["buyer"].items():
         lines.append(f"- **{field.replace('_', ' ').capitalize()}:** {fact('buyer', field, value)}")
     lines += [
@@ -83,6 +93,8 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     for key, excerpt in evidence.items():
         lines.append(f"[^{key}]: {_escape(excerpt)}")
     lines += ["", "## 2. Risks / unknowns", "", "### Harness checks", ""]
+    for warning in validation_warnings:
+        lines.append(f"- **Excluded {_escape(warning['source_id'])}.{_escape(warning['field'])}:** {_escape(warning['reason'])}")
     for result in calculations:
         for warning in result["warnings"]:
             lines.append(f"- **{_escape(names[result['source_id']])}:** {_escape(warning)}")

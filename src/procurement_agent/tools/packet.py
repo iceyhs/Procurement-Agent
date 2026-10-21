@@ -21,6 +21,11 @@ class Packet:
             for index, text in enumerate(self.suppliers, 1)
         }}
 
+    @property
+    def numbered_sources(self) -> dict[str, str]:
+        return {source_id: "\n".join(f"L{index}: {line}" for index, line in enumerate(text.splitlines(), 1))
+                for source_id, text in self.sources.items()}
+
 
 def parse_packet(text: str) -> Packet:
     if not text.strip():

@@ -99,6 +99,36 @@ def extracted_example():
     return {"buyer": buyer, "suppliers": suppliers}
 
 
+def model_extraction():
+    """Wire-format fixture with named suppliers and source-line citations."""
+    data = extracted_example()
+    sources = parse_packet(EXAMPLE.read_text()).sources
+    records = [("buyer", data["buyer"]), *[(item["source_id"], item) for item in data["suppliers"]]]
+    for source_id, record in records:
+        lines = sources[source_id].splitlines()
+        for field, value in record.items():
+            if field == "source_id" or value["value"] is None:
+                continue
+            needle = " ".join(value["evidence"].split())
+            found = False
+            for size in range(1, len(lines) + 1):
+                for start in range(len(lines) - size + 1):
+                    excerpt = " ".join("\n".join(lines[start:start + size]).split())
+                    if needle in excerpt:
+                        first, last = start + 1, start + size
+                        value["evidence"] = f"L{first}" if first == last else f"L{first}-L{last}"
+                        found = True
+                        break
+                if found:
+                    break
+            if not found:
+                raise AssertionError(f"Fixture evidence missing from {source_id}.{field}")
+    return {"buyer": data["buyer"], "suppliers": {
+        item["source_id"]: {field: value for field, value in item.items() if field != "source_id"}
+        for item in data["suppliers"]
+    }}
+
+
 def analysis_example():
     return {
         "risks": [
@@ -149,6 +179,53 @@ class ExtractionTests(unittest.TestCase):
         result = validate_extraction(self.data, self.sources)
         self.assertEqual(result["suppliers"][0]["source_id"], "supplier_1")
         self.assertIsNone(result["buyer"]["revision"]["value"])
+
+    def test_named_records_and_line_citations_resolve_to_original_text(self):
+        wire = model_extraction()
+        original = copy.deepcopy(wire)
+        data = validate_extraction(wire, self.sources)
+        self.assertEqual([item["source_id"] for item in data["suppliers"]], list(self.sources)[1:])
+        self.assertIn("$4.85 per piece", data["suppliers"][0]["quoted_price"]["evidence"])
+        self.assertNotEqual(data["suppliers"][0]["quoted_price"]["evidence"], wire["suppliers"]["supplier_1"]["quoted_price"]["evidence"])
+        self.assertEqual(wire, original)
+
+    def test_missing_named_supplier_is_a_structural_error_even_in_partial_mode(self):
+        wire = model_extraction()
+        del wire["suppliers"]["supplier_4"]
+        with self.assertRaisesRegex(ValidationError, "suppliers: expected fields"):
+            validate_extraction(wire, self.sources, allow_partial=True)
+
+    def test_invalid_line_references_and_blank_lines_are_rejected(self):
+        for citation in ("L999", "L4-L2", "L2-L999", "L" + "9" * 100, "supplier_2:L1"):
+            wire = model_extraction()
+            wire["suppliers"]["supplier_1"]["payment_terms"]["evidence"] = citation
+            with self.subTest(citation=citation), self.assertRaises(ValidationError):
+                validate_extraction(wire, self.sources)
+        wire = model_extraction()
+        sources = {**self.sources, "supplier_1": self.sources["supplier_1"] + "\n\nExtra note"}
+        blank = len(self.sources["supplier_1"].splitlines()) + 1
+        wire["suppliers"]["supplier_1"]["payment_terms"]["evidence"] = f"L{blank}"
+        with self.assertRaisesRegex(ValidationError, "nonempty source text"):
+            validate_extraction(wire, sources)
+
+    def test_partial_mode_excludes_unsupported_price_and_withholds_calculations(self):
+        wire = model_extraction()
+        wire["suppliers"]["supplier_3"]["quoted_price"]["value"] = "99999"
+        result = validate_extraction(wire, self.sources, allow_partial=True)
+        supplier = result["suppliers"][2]
+        for field in ("quoted_price", "price_basis_quantity", "currency"):
+            self.assertIsNone(supplier[field]["value"])
+        calculation = calculate_amounts(result)[2]
+        self.assertIsNone(calculation["normalized_unit_price"])
+        self.assertIsNone(calculation["quantity_price_extension"])
+        self.assertTrue(any(item["field"] == "price" for item in result["validation_warnings"]))
+
+    def test_minimum_release_is_not_accepted_as_an_moq(self):
+        wire = model_extraction()
+        supplier = wire["suppliers"]["supplier_1"]
+        supplier["moq"] = fact("5000", supplier["min_release"]["evidence"])
+        with self.assertRaisesRegex(ValidationError, "explicit minimum-order evidence"):
+            validate_extraction(wire, self.sources)
 
     def test_reject_evidence_from_another_supplier(self):
         self.data["suppliers"][0]["revision"] = fact("C", "drawing rev C")
@@ -259,6 +336,15 @@ class CalculationTests(unittest.TestCase):
         supplier["price_basis_quantity"]["value"] = "3"
         self.assertEqual(calculate_amounts(data)[2]["quantity_price_extension"], "20000")
 
+    def test_unverified_tooling_terms_withhold_tooling_scenario(self):
+        packet = parse_packet(EXAMPLE.read_text())
+        wire = model_extraction()
+        wire["suppliers"]["supplier_1"]["tooling_terms"] = fact("Unsupported terms", "L999")
+        data = validate_extraction(wire, packet.sources, allow_partial=True)
+        result = calculate_amounts(data)[0]
+        self.assertEqual(result["quantity_price_extension"], "291000.00")
+        self.assertIsNone(result["extension_plus_stated_tooling"])
+
 
 class WorkflowTests(unittest.TestCase):
     def setUp(self):
@@ -270,7 +356,7 @@ class WorkflowTests(unittest.TestCase):
         return Mock(model="test/model", timeout=60, complete=Mock(side_effect=list(responses)))
 
     def test_full_two_call_workflow_and_four_sections(self):
-        client = self.client(json.dumps(self.extraction), json.dumps(self.analysis))
+        client = self.client(json.dumps(model_extraction()), json.dumps(self.analysis))
         report = ProcurementAgent(client).review(self.packet)
         self.assertEqual(client.complete.call_count, 2)
         self.assertEqual([line for line in report.splitlines() if line.startswith("## ")], [
@@ -317,7 +403,34 @@ class WorkflowTests(unittest.TestCase):
         correction = client.complete.call_args_list[1].args[0]
         self.assertEqual(correction[-2]["content"], json.dumps(broken))
         self.assertIn("supplier_1.payment_terms", correction[-1]["content"])
-        self.assertIn("copied verbatim", correction[-1]["content"])
+        self.assertIn("using L3 or L3-L5", correction[-1]["content"])
+
+    def test_report_survives_the_reported_optional_field_failures(self):
+        missing = model_extraction()
+        del missing["suppliers"]["supplier_4"]
+        broken = model_extraction()
+        supplier = broken["suppliers"]["supplier_1"]
+        supplier["price_qualification"] = fact("UNSUPPORTED_TEST_CLAIM", "L999")
+        supplier["annual_volume"] = fact("60000", "L999")
+        supplier["moq"] = fact("99999", supplier["quoted_price"]["evidence"])
+        supplier["other_terms"] = fact("", None)
+        broken["suppliers"]["supplier_4"]["other_terms"] = fact("UNSUPPORTED_TEST_CLAIM", "L999")
+        client = self.client(json.dumps(missing), json.dumps(broken), json.dumps(self.analysis))
+        progress = []
+        report = ProcurementAgent(client, on_progress=progress.append).review(self.packet)
+        self.assertEqual(client.complete.call_count, 3)
+        self.assertIn("Incomplete evidence validation", report)
+        self.assertIn("Unverified / excluded", report)
+        self.assertIn("Excluded", report)
+        self.assertNotIn("UNSUPPORTED_TEST_CLAIM", report)
+        self.assertTrue(any("Extraction incomplete" in event for event in progress))
+        payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
+        warnings = payload["extraction"]["validation_warnings"]
+        self.assertEqual({item["field"] for item in warnings}, {"price_qualification", "annual_volume", "moq", "other_terms"})
+        self.assertIsNone(payload["extraction"]["suppliers"][0]["moq"]["value"])
+        self.assertIsNone(payload["calculations"][0]["quantity_price_extension"])
+        self.assertEqual(payload["calculations"][2]["quantity_price_extension"], "194400")
+        self.assertIn("Unknown / not stated", report)
 
     def test_shared_correction_budget(self):
         for responses in (
@@ -393,7 +506,7 @@ class WorkflowTests(unittest.TestCase):
             response.__exit__ = Mock(return_value=False)
             return response
 
-        send.side_effect = [response_for(self.extraction), response_for(self.analysis)]
+        send.side_effect = [response_for(model_extraction()), response_for(self.analysis)]
         with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
             output = Path(directory) / "report.md"
             self.assertEqual(main(["review", str(EXAMPLE), "--output", str(output)]), 0)
@@ -417,13 +530,18 @@ class StructuredContractTests(unittest.TestCase):
         buyer = schema["properties"]["buyer"]
         self.assertEqual(set(buyer["properties"]), set(BUYER_FIELDS))
         self.assertEqual(set(buyer["required"]), set(BUYER_FIELDS))
-        supplier = schema["properties"]["suppliers"]["items"]
-        self.assertEqual(set(supplier["properties"]), {*SUPPLIER_FIELDS, "source_id"})
-        self.assertEqual(supplier["properties"]["source_id"]["enum"], ["supplier_1", "supplier_2"])
+        named_suppliers = schema["properties"]["suppliers"]
+        self.assertEqual(named_suppliers["type"], "object")
+        self.assertEqual(named_suppliers["required"], ["supplier_1", "supplier_2"])
+        self.assertEqual(set(named_suppliers["properties"]), {"supplier_1", "supplier_2"})
+        supplier = schema["$defs"]["supplier"]
+        self.assertEqual(set(supplier["properties"]), set(SUPPLIER_FIELDS))
+        self.assertEqual(named_suppliers["properties"]["supplier_1"], {"$ref": "#/$defs/supplier"})
         fact_schema = schema["$defs"]["fact"]
         self.assertEqual(fact_schema["type"], "object")
         self.assertEqual(set(fact_schema["required"]), {"value", "evidence"})
         self.assertEqual(fact_schema["properties"]["value"]["type"], ["string", "null"])
+        self.assertIn("pattern", fact_schema["properties"]["evidence"])
         self.assertEqual(buyer["properties"]["part"], {"$ref": "#/$defs/fact"})
         self.assertFalse(schema["additionalProperties"])
         self.assertFalse(buyer["additionalProperties"])

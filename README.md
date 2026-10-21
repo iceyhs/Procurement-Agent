@@ -2,7 +2,8 @@
 
 Python 3.12+ CLI for the Aron procurement exercise. It reconciles free-text supplier
 quotes against a buyer's requirements and produces an evidence-backed Markdown
-report. It uses OpenRouter and Python's standard library, with no runtime dependencies.
+report. It uses OpenRouter, Python's standard library, and `python-dotenv` for the
+interactive chat entry point.
 
 ## Setup
 
@@ -36,6 +37,8 @@ variables. Enter a question at `You:`; type `exit` or `quit` to leave. Conversat
 history is kept in memory for this session and sent with each question; it is not
 saved between runs. Each turn may incur API charges. Quotes must be provided in
 the conversation; the agent does not automatically read repository files.
+Chat is a separate free-text interface; use the `review` command below for the
+validated extraction, deterministic calculations, and four-section report.
 
 ## Review a packet
 

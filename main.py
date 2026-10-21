@@ -4,7 +4,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from procurement_agent.agent import SYSTEM_PROMPT
+from procurement_agent.prompts import CHAT_PROMPT
 from procurement_agent.openrouter import OpenRouterClient, OpenRouterError
 
 
@@ -17,7 +17,7 @@ def main() -> int:
         print(f"Error: {exc}")
         return 1
 
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": CHAT_PROMPT}]
     print(f"Procurement Agent ({client.model})")
     print("Ask a question. Type exit or quit to leave. Each turn sends an API request.")
     while True:

@@ -153,12 +153,21 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():
         lines += [f"### {_escape(name)}", ""]
-        priority = amounts[owner]["priority_questions"] if owner in amounts else []
-        if priority:
-            lines += ["**Resolve first:**", ""]
-            lines.extend(f"{index}. {_escape(question)}" for index, question in enumerate(priority, 1))
-            lines += ["", "**Additional clarification:**", ""]
-        assessment([item for item in analysis["follow_up_questions"] if item["owner"] == owner and item["text"] not in priority])
+        questions = [item for item in analysis["follow_up_questions"] if item["owner"] == owner]
+        seen = set()
+        for priority, label in (("blocking", "Resolve first"), ("important", "Commercial clarification"), ("optional", "Optional")):
+            selected = []
+            for item in questions:
+                key = " ".join(item["text"].split()).casefold()
+                if item["priority"] == priority and key not in seen:
+                    selected.append(item)
+                    seen.add(key)
+            if selected:
+                lines += [f"**{label}:**", ""]
+                assessment(selected)
+                lines.append("")
+        if not questions:
+            lines.append("No follow-up questions drafted for this party.")
         lines.append("")
     lines += [
         "Confirm assumptions, technical compliance and unresolved costs against the original quotes before a purchasing decision.", "",

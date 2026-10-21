@@ -8,7 +8,7 @@ from .schema import (
     MAX_RESPONSE_CHARS, ValidationError, analysis_format, extraction_format,
     load_response, validate_analysis, validate_extraction,
 )
-from .tools.calculations import calculate_amounts
+from .tools.calculations import calculate_amounts, follow_up_context
 from .tools.packet import Packet, parse_packet
 from .tools.report import render_report
 
@@ -91,7 +91,8 @@ class ReviewHarness:
             ]
         state.analysis = self._request(
             state, ANALYSIS_PROMPT,
-            {"extraction": analysis_extraction, "calculations": state.calculations},
+            {"extraction": analysis_extraction, "calculations": state.calculations,
+             "follow_up_context": follow_up_context(state.extraction, state.calculations)},
             validate_analysis, max_tokens=6000, stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )

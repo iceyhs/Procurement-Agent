@@ -106,8 +106,17 @@ bytes and eight supplier replies per run.
 2. **Risks / unknowns** — harness warnings and model assessment.
 3. **Shortlist / recommendation** — explicit advance, hold, or do-not-advance action
    per supplier; advancement means further clarification, not an award decision.
-4. **Follow-up questions** — blocking revision, delivery-cost, tooling, and currency
-   questions first, followed by additional clarification, grouped by owner.
+4. **Follow-up questions** — model-drafted questions grounded in this case's gaps
+   and risks, grouped by owner and ordered as blocking, important, then optional.
+
+There are no application-level question templates or supplier-specific question
+lists. The harness sends an issue inventory (missing/uncertain fields, validation
+warnings, detected risks, and comparability gaps) alongside the validated facts.
+The model authors each question, including questions about novel commercial terms.
+The renderer displays those questions, removes exact duplicates, and groups them
+by priority. Owners without useful questions need not receive generic busywork.
+Supplier IDs and schemas come from the input blocks; adding a fifth supplier uses
+the same workflow and requires no code changes (the eight-supplier limit remains).
 
 Unit-price extensions are not landed costs or confirmed ordering plans. Currencies
 remain separate. Bare `$` is retained as quoted. When this RFQ also contains an

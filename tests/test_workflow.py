@@ -15,7 +15,7 @@ from procurement_agent.schema import (
     BUYER_FIELDS, SUPPLIER_FIELDS, ValidationError, analysis_format, extraction_format, load_response, validate_analysis,
     validate_extraction,
 )
-from procurement_agent.tools.calculations import calculate_amounts
+from procurement_agent.tools.calculations import calculate_amounts, follow_up_context
 from procurement_agent.tools.packet import MAX_INPUT_BYTES, parse_packet, read_packet
 from procurement_agent.tools.report import render_report, write_report
 
@@ -144,11 +144,15 @@ def analysis_example():
             {"supplier_id": "supplier_4", "action": "hold", "text": "Obtain firm pricing and tooling, and confirm currency and drawing revision.", "source_ids": ["supplier_4"]},
         ],
         "follow_up_questions": [
-            {"owner": "buyer", "text": "What revision, finish, destination, release schedule and delivery date are required, and how should cost versus responsiveness be prioritized?", "source_ids": ["buyer"]},
-            {"owner": "supplier_1", "text": "Please confirm currency, required-revision compliance, finish inclusion, delivered freight and price for the planned release schedule.", "source_ids": ["supplier_1"]},
-            {"owner": "supplier_2", "text": "Please explain post-amortization pricing, the index adjustment formula, deposit recovery and quote issue date.", "source_ids": ["supplier_2"]},
-            {"owner": "supplier_3", "text": "Can you quote the required revision and delivered costs, and confirm MOQ flexibility and full delivery timing?", "source_ids": ["supplier_3", "buyer"]},
-            {"owner": "supplier_4", "text": "Please provide firm pricing and currency, tooling, payment terms, startup timing and safety-stock replenishment and ownership terms.", "source_ids": ["supplier_4"]},
+            {"owner": "buyer", "priority": "blocking", "text": "What revision, finish, destination, release schedule and delivery date are required, and how should cost versus responsiveness be prioritized?", "source_ids": ["buyer"]},
+            {"owner": "supplier_1", "priority": "important", "text": "Please confirm currency, required-revision compliance, finish inclusion, delivered freight and price for the planned release schedule.", "source_ids": ["supplier_1"]},
+            {"owner": "supplier_2", "priority": "important", "text": "Please explain post-amortization pricing, the index adjustment formula, deposit recovery and quote issue date.", "source_ids": ["supplier_2"]},
+            {"owner": "supplier_3", "priority": "blocking", "text": "Can you re-quote against the buyer-confirmed current drawing revision?", "source_ids": ["supplier_3", "buyer"]},
+            {"owner": "supplier_3", "priority": "blocking", "text": "What freight and duty charges apply to the buyer destination?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_3", "priority": "blocking", "text": "Does the quoted lead time include end-to-end transit through final delivery?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_4", "priority": "blocking", "text": "What is the tooling cost after engineering review?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "blocking", "text": "Can you confirm the pricing currency explicitly?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "blocking", "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
         ],
     }
 
@@ -468,12 +472,12 @@ class WorkflowTests(unittest.TestCase):
             ProcurementAgent(client).review(self.packet)
         self.assertEqual(client.complete.call_count, 1)
 
-    def test_reject_unknown_analysis_sources_and_missing_question_owner(self):
+    def test_reject_unknown_analysis_sources_and_unknown_question_owner(self):
         self.analysis["risks"][0]["source_ids"] = ["unknown"]
         with self.assertRaises(ValidationError):
             validate_analysis(self.analysis, parse_packet(self.packet).sources)
         self.analysis = analysis_example()
-        self.analysis["follow_up_questions"].pop()
+        self.analysis["follow_up_questions"][0]["owner"] = "unknown_supplier"
         with self.assertRaises(ValidationError):
             validate_analysis(self.analysis, parse_packet(self.packet).sources)
 
@@ -578,6 +582,7 @@ class StructuredContractTests(unittest.TestCase):
             self.assertEqual(item["properties"]["source_ids"]["items"]["enum"], sources)
         follow_up = schema["properties"]["follow_up_questions"]["items"]
         self.assertEqual(follow_up["properties"]["owner"]["enum"], sources)
+        self.assertEqual(follow_up["properties"]["priority"]["enum"], ["blocking", "important", "optional"])
         recommendations = schema["properties"]["recommendation"]
         self.assertEqual(recommendations["required"], ["supplier_1"])
         self.assertEqual(recommendations["properties"]["supplier_1"]["properties"]["action"]["enum"],
@@ -681,6 +686,94 @@ class BuyerReportQualityTests(unittest.TestCase):
         self.analysis["recommendation"].pop()
         with self.assertRaisesRegex(ValidationError, "every supplier"):
             validate_analysis(self.analysis, sources)
+
+
+class DynamicFollowUpTests(unittest.TestCase):
+    def test_context_contains_gaps_uncertainty_validation_and_risk_signals(self):
+        packet = parse_packet(EXAMPLE.read_text())
+        wire = model_extraction()
+        wire["suppliers"]["supplier_4"]["other_terms"] = fact("Unsupported", "L999")
+        data = validate_extraction(wire, packet.sources, allow_partial=True)
+        calculations = calculate_amounts(data)
+        context = follow_up_context(data, calculations)
+        self.assertIn("revision", context["buyer"]["missing_fields"])
+        self.assertIn("destination", context["buyer"]["missing_fields"])
+        self.assertIn("currency", context["supplier_4"]["uncertain_fields"])
+        self.assertIn("other_terms", context["supplier_4"]["validation_fields"])
+        self.assertTrue(context["supplier_3"]["detected_risks"][0]["blocking"])
+        self.assertIn("freight and duty excluded", context["supplier_3"]["comparability_gaps"][0])
+        self.assertTrue(all("priority_questions" not in item for item in calculations))
+
+    def test_renderer_uses_only_model_questions_and_sorts_priorities(self):
+        data = extracted_example()
+        analysis = analysis_example()
+        analysis["follow_up_questions"] = [
+            {"owner": "supplier_1", "priority": priority, "text": text, "source_ids": ["supplier_1"]}
+            for priority, text in (("optional", "Optional topic?"), ("important", "Important topic?"),
+                                   ("blocking", "Blocking topic?"), ("optional", "Blocking topic?"))
+        ]
+        analysis = validate_analysis(analysis, parse_packet(EXAMPLE.read_text()).sources)
+        report = render_report(data, calculate_amounts(data), analysis).split("## 4. Follow-up questions", 1)[1]
+        self.assertLess(report.index("Blocking topic?"), report.index("Important topic?"))
+        self.assertLess(report.index("Important topic?"), report.index("Optional topic?"))
+        self.assertEqual(report.count("Blocking topic?"), 1)
+        self.assertIn("No follow-up questions drafted for this party.", report)
+        self.assertNotIn("Which drawing revision", report)
+        self.assertNotIn("What freight and duty", report)
+
+    def test_empty_questions_do_not_force_busywork_and_invalid_priority_is_rejected(self):
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        analysis = analysis_example()
+        analysis["follow_up_questions"] = []
+        self.assertEqual(validate_analysis(analysis, sources)["follow_up_questions"], [])
+        analysis = analysis_example()
+        analysis["follow_up_questions"][0]["priority"] = "unknown"
+        with self.assertRaisesRegex(ValidationError, "Follow-up priority"):
+            validate_analysis(analysis, sources)
+
+    def test_fifth_supplier_flows_through_same_two_call_pipeline(self):
+        fifth_text = (
+            "Forge Delta\nPart BRK-4471-A, drawing Rev C\nIndicative USD 5.10 per piece\n"
+            "Tooling to be confirmed after fixture design\nDDP Columbus, Ohio\n"
+            "First-article approval required before series deliveries; approval duration unspecified\n"
+            "Lead time 6 weeks after first-article approval"
+        )
+        packet_text = EXAMPLE.read_text() + "\n===PACKET===\n" + fifth_text
+        wire = model_extraction()
+        wire["suppliers"]["supplier_5"] = {field: fact() for field in SUPPLIER_FIELDS}
+        wire["suppliers"]["supplier_5"].update({
+            "supplier": fact("Forge Delta", "L1"), "part": fact("BRK-4471-A", "L2"),
+            "revision": fact("C", "L2"), "quoted_price": fact("5.10", "L3"),
+            "price_basis_quantity": fact("1", "L3"), "currency": fact("USD", "L3"),
+            "price_qualification": fact("Indicative", "L3"),
+            "tooling_terms": fact("Pending fixture design", "L4"),
+            "delivery_terms": fact("DDP Columbus, Ohio", "L5"),
+            "other_terms": fact("First-article approval required; approval duration unspecified", "L6"),
+            "lead_time": fact("6 weeks after first-article approval", "L7"),
+        })
+        analysis = model_analysis()
+        analysis["recommendation"]["supplier_5"] = {
+            "action": "hold", "text": "Resolve approval timing and tooling before advancing.", "source_ids": ["supplier_5"],
+        }
+        question = "Who approves the first article, and how long does approval take before the quoted six-week lead time starts?"
+        analysis["follow_up_questions"].append({
+            "owner": "supplier_5", "priority": "blocking", "text": question, "source_ids": ["supplier_5"],
+        })
+        client = Mock(complete=Mock(side_effect=[json.dumps(wire), json.dumps(analysis)]))
+        report = ProcurementAgent(client).review(packet_text)
+        self.assertEqual(client.complete.call_count, 2)
+        extraction_contract = client.complete.call_args_list[0].kwargs["response_format"]["json_schema"]["schema"]
+        self.assertIn("supplier_5", extraction_contract["properties"]["suppliers"]["required"])
+        payload = json.loads(client.complete.call_args_list[1].args[0][1]["content"])
+        self.assertEqual(set(payload["follow_up_context"]), {"buyer", *(f"supplier_{i}" for i in range(1, 6))})
+        fifth_context = payload["follow_up_context"]["supplier_5"]
+        self.assertIn("tooling_amount", fifth_context["missing_fields"])
+        self.assertIn("price_qualification", fifth_context["uncertain_fields"])
+        self.assertIn("First-article approval", payload["extraction"]["suppliers"][4]["other_terms"]["value"])
+        analysis_contract = client.complete.call_args_list[1].kwargs["response_format"]["json_schema"]["schema"]
+        self.assertIn("supplier_5", analysis_contract["properties"]["follow_up_questions"]["items"]["properties"]["owner"]["enum"])
+        self.assertIn("### Forge Delta", report)
+        self.assertIn(question, report)
 
 
 class ReportWriteTests(unittest.TestCase):

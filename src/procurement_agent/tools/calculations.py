@@ -52,7 +52,7 @@ def _revision_blocker(supplier, extraction):
     return None
 
 
-def _buyer_notes(supplier, extraction, currency):
+def _buyer_notes(supplier, extraction):
     def text(*fields):
         return " ".join(str(supplier[field][key] or "") for field in fields for key in ("value", "evidence"))
 
@@ -69,23 +69,37 @@ def _buyer_notes(supplier, extraction, currency):
         cost_note = "Nominal FOB price; full delivered cost is not established. Confirm freight and duty coverage."
     else:
         cost_note = "Delivery-cost coverage unknown; no confirmed landed-cost comparison."
-    blocker = _revision_blocker(supplier, extraction)
-    questions = []
-    if blocker:
-        questions.append("Can you re-quote against the buyer-confirmed current drawing revision, or confirm your quoted revision is the required one?")
-    elif supplier["revision"]["value"] is None:
-        questions.append("Which drawing revision is this quote based on, and can you confirm compliance with the buyer's required revision?")
-    if excluded or fob:
-        questions.append("What freight and duty charges should be expected to the buyer destination? Please provide delivered pricing once the destination is confirmed.")
-        if re.search(r"\b(?:ocean|production|shipping)\b", text("lead_time"), re.IGNORECASE):
-            questions.append("Does the quoted lead time include full end-to-end transit, customs clearance where applicable, and final delivery? Please confirm the complete delivered lead time.")
-        else:
-            questions.append("What is the complete lead time from release through arrival at the buyer destination?")
-    if supplier["tooling_amount"]["value"] is None and not re.search(r"\bincluded\b", text("tooling_terms"), re.IGNORECASE):
-        questions.append("Please confirm the tooling cost and whether it is a one-time charge.")
-    if currency["status"] != "explicit":
-        questions.append("Please confirm the pricing currency explicitly for unit prices and tooling; any USD interpretation is currently an assumption.")
-    return {"revision_blocker": blocker, "cost_comparability_note": cost_note, "priority_questions": questions}
+    return {"revision_blocker": _revision_blocker(supplier, extraction), "cost_comparability_note": cost_note}
+
+
+def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
+    """Issue metadata for model-authored questions; contains no question templates."""
+    records = {"buyer": extraction["buyer"], **{item["source_id"]: item for item in extraction["suppliers"]}}
+    context = {}
+    for owner, record in records.items():
+        context[owner] = {
+            "missing_fields": [field for field, fact in record.items() if field != "source_id" and fact["value"] is None],
+            "uncertain_fields": [],
+            "validation_fields": [item["field"] for item in extraction.get("validation_warnings", []) if item["source_id"] == owner],
+            "detected_risks": [],
+            "comparability_gaps": [],
+        }
+    for calculation in calculations:
+        owner = calculation["source_id"]
+        issue = context[owner]
+        if calculation["currency_info"]["status"] != "explicit":
+            issue["uncertain_fields"].append("currency")
+        if calculation["tooling_amount"] is not None and calculation["tooling_currency_info"]["status"] != "explicit":
+            issue["uncertain_fields"].append("tooling_currency")
+        if calculation["revision_blocker"]:
+            issue["detected_risks"].append({"field": "revision", "blocking": True, "detail": calculation["revision_blocker"]})
+        qualification = records[owner]["price_qualification"]["value"]
+        if qualification and re.search(r"around|approx|indicative|estimat|subject to|pending|confirm|provisional", qualification, re.IGNORECASE):
+            issue["uncertain_fields"].append("price_qualification")
+        issue["comparability_gaps"].append(calculation["cost_comparability_note"])
+        if calculation["quantity_price_extension"] is None:
+            issue["comparability_gaps"].append("No supported quantity price extension; quantity, price basis or conditions need clarification.")
+    return context
 
 
 def calculate_amounts(extraction: dict) -> list[dict]:
@@ -105,7 +119,7 @@ def calculate_amounts(extraction: dict) -> list[dict]:
             "currency": value("currency"),
             "currency_info": currency,
             "tooling_currency_info": tooling_currency,
-            **_buyer_notes(supplier, extraction, currency),
+            **_buyer_notes(supplier, extraction),
             "quantity": quantity,
             "quantity_basis": quantity_basis,
             "normalized_unit_price": None,

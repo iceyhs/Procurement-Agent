@@ -73,6 +73,7 @@ def analysis_format(source_ids: list[str]) -> dict:
         "follow_up_questions": {
             "type": "array", "items": _object_schema({
                 **item, "owner": {"type": "string", "enum": source_ids},
+                "priority": {"type": "string", "enum": ["blocking", "important", "optional"]},
             }),
         },
     }))
@@ -268,13 +269,14 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
         data["recommendation"] = records
     for section in ("risks", "recommendation", "follow_up_questions"):
         items = data[section]
-        if not isinstance(items, list) or not 1 <= len(items) <= 40:
-            _fail(f"{section}: expected 1 to 40 items.")
+        minimum = 0 if section == "follow_up_questions" else 1
+        if not isinstance(items, list) or not minimum <= len(items) <= 40:
+            _fail(f"{section}: expected {minimum} to 40 items.")
         for item in items:
             fields = {
                 "risks": ("text", "source_ids"),
                 "recommendation": ("text", "source_ids", "supplier_id", "action"),
-                "follow_up_questions": ("text", "source_ids", "owner"),
+                "follow_up_questions": ("text", "source_ids", "owner", "priority"),
             }[section]
             _keys(item, fields, section)
             if not isinstance(item["text"], str) or not item["text"].strip() or len(item["text"]) > 2000:
@@ -287,6 +289,8 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
             if section == "follow_up_questions":
                 if not isinstance(item["owner"], str) or item["owner"] not in sources:
                     _fail("Follow-up owner must be buyer or a supplier source ID.")
+                if item["priority"] not in ("blocking", "important", "optional"):
+                    _fail("Follow-up priority must be blocking, important, or optional.")
             if section == "recommendation":
                 if not isinstance(item["supplier_id"], str) or item["supplier_id"] not in supplier_ids:
                     _fail("Recommendation must identify a supplier from this packet.")
@@ -295,7 +299,4 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
     recommendations = [item["supplier_id"] for item in data["recommendation"]]
     if len(recommendations) != len(supplier_ids) or set(recommendations) != set(supplier_ids):
         _fail("Include exactly one recommendation action for every supplier.")
-    owners = {item["owner"] for item in data["follow_up_questions"]}
-    if owners != set(sources):
-        _fail("Include follow-up questions for the buyer and every supplier.")
     return data

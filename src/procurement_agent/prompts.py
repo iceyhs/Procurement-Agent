@@ -76,14 +76,15 @@ three sections as JSON:
 {
   "risks": [{"text": "...", "source_ids": ["buyer", "supplier_1"]}],
   "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"]}},
-  "follow_up_questions": [{"owner": "supplier_1", "text": "...", "source_ids": ["supplier_1"]}]
+  "follow_up_questions": [{"owner": "supplier_1", "priority": "blocking", "text": "...", "source_ids": ["supplier_1"]}]
 }
 Return exactly one recommendation per supplier, keyed by its source ID. Its action
 must be advance, hold, or do_not_advance. Advance means shortlist for further
 commercial/technical clarification, not approval to purchase. Explain the next
 step and conditions in text. Do not substitute a general supplier summary for a
-clear action. Other lists must have 1 to 40 items. Use only provided source IDs. Include targeted
-questions for the buyer and EVERY supplier. Order risks and questions by decision
+clear action. Risks must have 1 to 40 items; follow_up_questions may have 0 to 40.
+Use only provided source IDs. Evaluate the buyer and EVERY supplier dynamically,
+regardless of the number or identities in the packet. Order risks and questions by decision
 impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
 Markdown headings, HTML, tables, or an alternative report.
 The extraction may contain harness-generated validation_warnings. Those fields
@@ -93,19 +94,29 @@ reconstruct discarded claims or recommend based on them. Withheld amounts are
 unknown, not zero. Keep the shortlist conditional when validation is incomplete.
 Describe affected terms in buyer language; do not expose internal field paths,
 schema errors, harness operations, or validation mechanics in report prose.
-Calculation results also include currency_info, revision_blocker,
-cost_comparability_note, and priority_questions. Currency status 'inferred' is
+Calculation results also include currency_info, revision_blocker, and
+cost_comparability_note. Currency status 'inferred' is
 an explicit assumption, never a verified quote term. Retain nominal prices using
 that labelled assumption instead of excluding them. Do not describe inferred USD
 as supplier-confirmed, or treat it as a licence to compare landed costs.
 If revision_blocker is present, use do_not_advance and state that the supplier
-must confirm the current drawing or re-quote before progressing. Rev B versus
-another quote's Rev C is a major blocker; it does not prove the buyer requires C.
+must confirm the current drawing or re-quote before progressing. Conflicting
+quoted revisions do not establish which revision the buyer requires.
 Freight/duty exclusions make a price nominal rather than a landed-cost advantage.
-Prioritize drawing, landed-cost coverage, and complete delivered lead-time
-questions. For uncertain tooling, currency, or revision, request explicit
-confirmation. The renderer already includes the supplied priority_questions;
-provide additional targeted questions without repeating them where possible.
+Generate ALL question text yourself from this case, not supplier names, fixed
+positions, or canned questions. The follow_up_context is an issue inventory:
+missing_fields, uncertain_fields, validation_fields, detected_risks, and
+comparability_gaps for each owner. Combine it with the actual validated terms to
+identify additional commercial/technical risks, including novel terms in
+other_terms. The inventory is not an exhaustive list or a command to ask about
+every empty field. Do not ask for information already clear unless a concrete
+conflict or decision risk justifies reconfirmation. Do not fabricate missingness.
+Each question must resolve a specific gap or risk and be addressed to the party
+who can resolve it. Assign priority blocking (prevents advancement or comparison),
+important (material commercial clarification), or optional. Cover blocking risks
+first, keep one topic per question where possible, and avoid duplicates. If no
+useful clarification is needed for an owner, omit questions for that owner rather
+than inventing busywork. The renderer displays only your drafted questions.
 
 Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
 consequential statement must be supported by the referenced sources. Quoted

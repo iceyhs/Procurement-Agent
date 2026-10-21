@@ -28,6 +28,9 @@ Use {"value": null, "evidence": null} for missing information. Evidence must be
 copied from its own source, with no ellipsis or paraphrase. Do not use another
 supplier's terms to fill gaps. Values may summarize terms but must preserve
 qualifications, exclusions, starting conditions, and uncertainty.
+For part, cite the exact identifier itself (for example BRK-4471-A), including
+when it occurs only in an email subject. Never add an invented 'Part:' label to
+the evidence. If a supplier source contains no part identifier, leave its part null.
 
 Numeric fact values must be decimal strings without currency or grouping commas.
 quantity, price_basis_quantity, annual_volume, moq, min_release are positive integers.

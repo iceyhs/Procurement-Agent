@@ -87,7 +87,15 @@ def _fact(value, field, source, location):
     if not isinstance(evidence, str) or not evidence.strip() or len(evidence) > 2000:
         _fail(f"{location}: known values require a short evidence excerpt.")
     if _normalize(evidence) not in _normalize(source):
-        _fail(f"{location}: evidence must occur in this source.")
+        # Part identifiers can be cited directly, even if the model added a
+        # nonexistent label to its excerpt. This never searches another source
+        # or accepts an identifier missing from the supplier's original text.
+        match = None
+        if field == "part" and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]{3,99}", data):
+            match = re.search(r"(?<![\w-])" + re.escape(data) + r"(?![\w-])", source)
+        if match is None:
+            _fail(f"{location}: evidence must occur in this source; copy an exact excerpt without added labels.")
+        value["evidence"] = match.group()
     if field in NUMERIC_FIELDS:
         if not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,6})?", data):
             _fail(f"{location}: use an unsigned decimal string without currency or commas.")
@@ -113,8 +121,18 @@ def _fact(value, field, source, location):
 def validate_extraction(data: dict, sources: dict[str, str]) -> dict:
     _keys(data, ("buyer", "suppliers"), "extraction")
     _keys(data["buyer"], BUYER_FIELDS, "buyer")
+    errors = []
+
+    def check_fact(value, field, source, location):
+        try:
+            _fact(value, field, source, location)
+            return True
+        except ValidationError as error:
+            errors.append(str(error))
+            return False
+
     for field in BUYER_FIELDS:
-        _fact(data["buyer"][field], field, sources["buyer"], f"buyer.{field}")
+        check_fact(data["buyer"][field], field, sources["buyer"], f"buyer.{field}")
     suppliers = data["suppliers"]
     expected_ids = set(sources) - {"buyer"}
     if not isinstance(suppliers, list) or len(suppliers) != len(expected_ids):
@@ -126,11 +144,14 @@ def validate_extraction(data: dict, sources: dict[str, str]) -> dict:
         if not isinstance(source_id, str) or source_id not in expected_ids or source_id in seen:
             _fail("Supplier source IDs must be known and unique.")
         seen.add(source_id)
-        for field in SUPPLIER_FIELDS:
-            _fact(item[field], field, sources[source_id], f"{source_id}.{field}")
-        known = [item[field]["value"] is not None for field in ("quoted_price", "price_basis_quantity", "currency")]
-        if any(known) and not all(known):
-            _fail(f"{source_id}: price, price basis, and currency must be known together or all null.")
+        valid = [check_fact(item[field], field, sources[source_id], f"{source_id}.{field}")
+                 for field in SUPPLIER_FIELDS]
+        if all(valid):
+            known = [item[field]["value"] is not None for field in ("quoted_price", "price_basis_quantity", "currency")]
+            if any(known) and not all(known):
+                errors.append(f"{source_id}: price, price basis, and currency must be known together or all null.")
+    if errors:
+        _fail("Extraction validation failed: " + "; ".join(errors[:12]))
     data["suppliers"].sort(key=lambda item: int(item["source_id"].split("_")[1]))
     return data
 

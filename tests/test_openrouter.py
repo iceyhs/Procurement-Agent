@@ -2,7 +2,7 @@ import io
 import json
 import unittest
 from unittest.mock import patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 from procurement_agent.cli import main
 from procurement_agent.openrouter import OpenRouterClient, OpenRouterError
@@ -44,6 +44,13 @@ class OpenRouterTests(unittest.TestCase):
         for payload in (None, [], {"choices": []}, {"choices": [None]}, {"choices": ["bad"]}):
             send.return_value.__enter__.return_value = io.BytesIO(json.dumps(payload).encode())
             with self.subTest(payload=payload), self.assertRaisesRegex(OpenRouterError, "no usable"):
+                self.client.complete([])
+
+    @patch("procurement_agent.openrouter.urlopen")
+    def test_timeout_is_explicit(self, send):
+        for error in (TimeoutError(), URLError(TimeoutError())):
+            send.side_effect = error
+            with self.subTest(error=type(error).__name__), self.assertRaisesRegex(OpenRouterError, "timed out.*60s"):
                 self.client.complete([])
 
     @patch.dict("os.environ", {}, clear=True)

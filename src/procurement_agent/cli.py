@@ -8,6 +8,10 @@ from .tools.packet import read_packet
 from .tools.report import check_output, write_report
 
 
+def _progress(message: str):
+    print(f"[review] {message}", file=sys.stderr, flush=True)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Evidence-backed procurement quote review")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -20,6 +24,7 @@ def main(argv=None) -> int:
     try:
         packet = None
         if args.command == "review":
+            _progress(f"Reading {args.packet}...")
             packet = read_packet(args.packet)
             check_output(args.output, args.packet, args.force)
         client = OpenRouterClient.from_env()
@@ -31,10 +36,15 @@ def main(argv=None) -> int:
                 raise OpenRouterError("Received a completion, but the connection check response was unexpected.")
             print(f"OpenRouter connection verified ({client.model}).")
         else:
-            report = ProcurementAgent(client).review(packet)
+            _progress(f"Using model {client.model} (network timeout: {client.timeout:g}s).")
+            report = ProcurementAgent(client, on_progress=_progress).review(packet)
+            _progress(f"Saving {args.output}...")
             write_report(args.output, report, args.force)
             print(f"Report saved to {args.output}")
         return 0
     except (OpenRouterError, OSError, UnicodeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
+    except KeyboardInterrupt:
+        print("\nCancelled.", file=sys.stderr)
+        return 130

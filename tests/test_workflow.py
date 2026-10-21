@@ -155,6 +155,29 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "evidence must occur"):
             validate_extraction(self.data, self.sources)
 
+    def test_part_number_with_bad_excerpt_is_grounded_in_own_source(self):
+        self.data["suppliers"][0]["part"] = fact("BRK-4471-A", "Part: BRK-4471-A")
+        result = validate_extraction(self.data, self.sources)
+        self.assertEqual(result["suppliers"][0]["part"]["evidence"], "BRK-4471-A")
+
+    def test_part_number_missing_from_own_source_still_fails(self):
+        self.data["suppliers"][0]["part"] = fact("BRK-9999-Z", "Part: BRK-9999-Z")
+        with self.assertRaisesRegex(ValidationError, "supplier_1.part: evidence must occur"):
+            validate_extraction(self.data, self.sources)
+
+    def test_reject_part_that_is_only_a_substring_of_another_identifier(self):
+        self.data["suppliers"][0]["part"] = fact("BRK-4471", "Part: BRK-4471")
+        with self.assertRaisesRegex(ValidationError, "supplier_1.part: evidence must occur"):
+            validate_extraction(self.data, self.sources)
+
+    def test_correction_reports_multiple_invalid_fields(self):
+        self.data["suppliers"][0]["revision"] = fact("C", "drawing rev C")
+        self.data["suppliers"][2]["quoted_price"]["value"] = "3.24"
+        with self.assertRaises(ValidationError) as error:
+            validate_extraction(self.data, self.sources)
+        self.assertIn("supplier_1.revision", str(error.exception))
+        self.assertIn("supplier_3.quoted_price", str(error.exception))
+
     def test_reject_number_without_supporting_evidence(self):
         self.data["suppliers"][2]["quoted_price"]["value"] = "3.24"
         with self.assertRaisesRegex(ValidationError, "numeric value"):
@@ -227,7 +250,7 @@ class WorkflowTests(unittest.TestCase):
         self.analysis = analysis_example()
 
     def client(self, *responses):
-        return Mock(complete=Mock(side_effect=list(responses)))
+        return Mock(model="test/model", timeout=60, complete=Mock(side_effect=list(responses)))
 
     def test_full_two_call_workflow_and_four_sections(self):
         client = self.client(json.dumps(self.extraction), json.dumps(self.analysis))
@@ -247,6 +270,30 @@ class WorkflowTests(unittest.TestCase):
         ProcurementAgent(client).review(self.packet)
         self.assertEqual(client.complete.call_count, 3)
         self.assertIn("failed validation", client.complete.call_args_list[1].args[0][-1]["content"])
+        self.assertEqual(client.complete.call_args_list[1].args[0][-2], {"role": "assistant", "content": "invalid json"})
+
+    def test_progress_is_emitted_before_each_model_request(self):
+        events = []
+        responses = iter((json.dumps(self.extraction), json.dumps(self.analysis)))
+        def complete(messages, **kwargs):
+            self.assertIn("waiting for model response", events[-1])
+            return next(responses)
+        client = Mock(complete=Mock(side_effect=complete))
+        ProcurementAgent(client, on_progress=events.append).review(self.packet)
+        self.assertIn("Extraction: waiting for model response (request 1/3)...", events)
+        self.assertIn("Analysis: waiting for model response (request 2/3)...", events)
+        self.assertEqual(events[-1], "Rendering the report...")
+
+    def test_validation_feedback_repairs_remaining_evidence_errors(self):
+        broken = copy.deepcopy(self.extraction)
+        broken["suppliers"][0]["part"] = fact("BRK-4471-A", "Part: BRK-4471-A")
+        broken["suppliers"][0]["payment_terms"] = fact("Net 30", "Payment: Net 30")
+        client = self.client(json.dumps(broken), json.dumps(self.extraction), json.dumps(self.analysis))
+        ProcurementAgent(client).review(self.packet)
+        correction = client.complete.call_args_list[1].args[0]
+        self.assertEqual(correction[-2]["content"], json.dumps(broken))
+        self.assertIn("supplier_1.payment_terms", correction[-1]["content"])
+        self.assertIn("copied verbatim", correction[-1]["content"])
 
     def test_shared_correction_budget(self):
         for responses in (
@@ -285,8 +332,10 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.md"
             client = self.client(json.dumps(self.extraction), json.dumps(self.analysis))
-            with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client), patch("sys.stdout", new_callable=io.StringIO):
+            with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client), patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as progress:
                 self.assertEqual(main(["review", str(EXAMPLE), "-o", str(output)]), 0)
+                self.assertIn("Extraction: waiting", progress.getvalue())
+                self.assertIn("Saving", progress.getvalue())
             previous = output.read_text()
             with patch("procurement_agent.cli.OpenRouterClient.from_env") as config, patch("sys.stderr", new_callable=io.StringIO):
                 self.assertEqual(main(["review", str(EXAMPLE), "-o", str(output)]), 1)
@@ -300,6 +349,15 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(main(["review", str(EXAMPLE), "-o", str(EXAMPLE), "--force"]), 1)
             config.assert_not_called()
 
+    def test_cli_cancellation_exits_without_writing_report(self):
+        client = self.client(KeyboardInterrupt())
+        with tempfile.TemporaryDirectory() as directory, patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            output = Path(directory) / "report.md"
+            with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client):
+                self.assertEqual(main(["review", str(EXAMPLE), "-o", str(output)]), 130)
+            self.assertFalse(output.exists())
+            self.assertIn("Cancelled", stderr.getvalue())
+
     @patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-secret", "OPENROUTER_MODEL": "test/model"})
     @patch("procurement_agent.openrouter.urlopen")
     def test_cli_through_real_adapter_with_mocked_http(self, send):
@@ -312,7 +370,7 @@ class WorkflowTests(unittest.TestCase):
             return response
 
         send.side_effect = [response_for(self.extraction), response_for(self.analysis)]
-        with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new_callable=io.StringIO):
+        with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
             output = Path(directory) / "report.md"
             self.assertEqual(main(["review", str(EXAMPLE), "--output", str(output)]), 0)
             self.assertIn("## 4. Follow-up questions", output.read_text())

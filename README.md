@@ -65,6 +65,9 @@ Alternatively, use the installed command after exporting the configuration:
 The default output is `report.md` in the current directory. Existing reports are
 preserved unless you pass `--force`. A failed review leaves the previous report
 intact; output cannot be the input file. Successful runs print the output path.
+Progress is flushed to stderr before each model request and during validation,
+calculation, and saving, so a running request does not appear idle. Ctrl+C cancels
+the local run with exit code 130. A network timeout is reported explicitly.
 
 ### Input format
 
@@ -125,6 +128,10 @@ cli.py -> agent.py -> harness.py
 - `prompts.py`: extraction and analysis instructions.
 - `schema.py`: field contracts, response shape checks, numeric evidence checks,
   exact-excerpt matching (ignoring whitespace), and source validation.
+  A malformed part-number excerpt is replaced with the exact identifier only when
+  that identifier occurs as a whole identifier in the same source. Otherwise it
+  is rejected. Correction feedback includes the rejected response and up to twelve
+  validation errors so the model can repair multiple fields in one attempt.
 - `tools/packet.py`, `tools/calculations.py`, `tools/report.py`: application tools
   invoked by application code. **No tools are exposed to the model.**
 - `openrouter.py`: HTTPS transport and safe provider errors.

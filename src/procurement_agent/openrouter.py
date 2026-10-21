@@ -55,7 +55,17 @@ class OpenRouterClient:
                 429: "Rate limited; retry later.",
             }.get(exc.code, "Check model availability or retry later.")
             raise OpenRouterError(f"OpenRouter HTTP {exc.code}. {hint}") from None
-        except (URLError, TimeoutError, OSError):
+        except TimeoutError:
+            raise OpenRouterError(
+                f"OpenRouter request timed out (network timeout: {self.timeout:g}s). No automatic retry was made."
+            ) from None
+        except URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise OpenRouterError(
+                    f"OpenRouter request timed out (network timeout: {self.timeout:g}s). No automatic retry was made."
+                ) from None
+            raise OpenRouterError("OpenRouter connection failed; check network access or retry later.") from None
+        except OSError:
             raise OpenRouterError("OpenRouter connection failed; check network access or retry later.") from None
         except (ValueError, UnicodeError):
             raise OpenRouterError("OpenRouter returned invalid JSON.") from None

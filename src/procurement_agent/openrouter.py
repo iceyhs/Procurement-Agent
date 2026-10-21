@@ -67,5 +67,5 @@ class OpenRouterClient:
             if not isinstance(content, str) or not content.strip():
                 raise ValueError
             return content.strip()
-        except (KeyError, IndexError, TypeError, ValueError):
+        except (KeyError, IndexError, TypeError, ValueError, AttributeError):
             raise OpenRouterError("OpenRouter returned no usable text completion.") from None

@@ -1,0 +1,68 @@
+We need a machined aluminium bracket, part BRK-4471-A, 60,000 units a year.
+Compare the supplier replies, recommend who to pursue, and identify what needs clarification.
+
+===PACKET===
+
+Quote 1 — Tri-State Metalcraft
+From: dmorrow@tristatemetalcraft.com
+Subject: RE: RFQ BRK-4471-A
+Hi Karen,
+Good talking Tuesday. Here's where we land on the bracket:
+$4.85 per piece, FOB our dock in Cleveland. That's at your 60k annual
+number -- we'd hold that price for releases of 5,000 or more, below that
+we'd have to look at it again.
+Tooling is $6,200, one time, invoiced on PO.
+Lead time 4 weeks from release, and we can usually beat that. Net 30.
+Pricing firm for 90 days. Anodizing is done in house so we're not exposed
+on that the way some of the overseas guys are.
+Dan
+
+===PACKET===
+
+Quote 2 — Nordkant Prazisionsteile GmbH
+NORDKANT PRAZISIONSTEILE GMBH
+Quotation No. NK-2026-1184
+Part: BRK-4471-A (per customer drawing rev C)
+Price schedule, annual volume:
+ 20,000 pcs EUR 4.30 / pc
+ 60,000 pcs EUR 3.92 / pc
+ 100,000 pcs EUR 3.71 / pc
+Delivery: DDP Columbus, Ohio
+Lead time: 11 weeks from order release
+Payment: Net 60 days. 2% discount for payment within 10 days.
+Tooling: included, amortized over first 40,000 pcs
+Packaging: returnable steel containers, deposit EUR 2,800 (refundable)
+Validity: 30 days from date of issue.
+Prices subject to quarterly adjustment per LME aluminium index,
+base 2026 Q1. Adjustments applied where index moves more than 4%.
+
+===PACKET===
+
+Quote 3 — Pacific Rim Components
+PART NO BRK-4471-A
+UNIT PRICE USD 3,240.00 / 1,000 PCS
+MOQ 25,000 PCS
+TERMS FOB KAOHSIUNG
+LEAD TIME 9 WEEKS PRODUCTION
+SHIPPING 5 WEEKS OCEAN
+TOOLING USD 4,800.00
+PAYMENT 30% T/T DEPOSIT, 70% BEFORE SHIPMENT
+NOTES PRICE BASED ON DRAWING REV B
+ ANODIZING SUBCONTRACTED
+ FREIGHT AND DUTY NOT INCLUDED
+
+===PACKET===
+
+Quote 4 — Brightwater Precision
+From: l.vega@brightwaterprecision.mx
+Subject: BRK-4471-A
+Karen,
+We can do this part. Looking at around $4.40 a piece at your volumes,
+EXW Queretaro. Lead time 6-8 weeks once we're running.
+Tooling we'd need to confirm after our engineering team reviews the
+drawing -- I don't want to quote you a number and then change it.
+One thing worth mentioning: we'd carry four weeks of safety stock for
+you at our facility at no charge, which I know has been an issue for you
+with the Asia suppliers.
+Happy to get on a call this week.
+Luis

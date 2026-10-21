@@ -43,7 +43,8 @@ Keep quoted_price in its ORIGINAL basis: USD 3,240 / 1,000 pcs means quoted_pric
 "3240" and price_basis_quantity "1000", not a computed per-piece price. Per piece
 means price_basis_quantity "1", citing the line with the per-piece phrase. Do not calculate.
 For quantity_basis use annual, order, or unspecified; if the buyer says only
-'60,000 units', use unspecified. Do not infer annual demand from supplier text.
+'a quantity of units' without a time basis, use unspecified. Do not infer annual
+demand from supplier text or substitute values from examples.
 
 Currency is a three-letter code only when supported by an explicit code or clear
 symbol (EUR/€, GBP/£). A bare '$' means value '$' (unspecified dollar currency),
@@ -66,8 +67,10 @@ delivery_terms, lead_time, payment_terms, validity, price_adjustment, other_term
 Approximate pricing must remain approximate. Included/amortized tooling does not
 mean a stated zero tooling price or an automatic later unit-price reduction.
 Refundable deposits are not permanent cost. Missing freight is not zero freight.
-Record 'anodizing in house' as a statement, not proof of finish compliance or
-price inclusion. Capture discrepancies in part/revision; never silently reconcile.
+Process/capability statements are not proof of specification compliance or price
+inclusion. Capture discrepancies in part/revision; never silently reconcile.
+Product, quantity, currency and technical requirements must come from this packet.
+Do not assume the RFQ concerns any particular material, process or type of part.
 """
 
 ANALYSIS_PROMPT = BOUNDARY + """
@@ -82,7 +85,8 @@ Return exactly one recommendation per supplier, keyed by its source ID. Its acti
 must be advance, hold, or do_not_advance. Advance means shortlist for further
 commercial/technical clarification, not approval to purchase. Explain the next
 step and conditions in text. Do not substitute a general supplier summary for a
-clear action. Risks must have 1 to 40 items; follow_up_questions may have 0 to 40.
+clear action. Keep risks and follow-up questions concise, focusing on material
+issues across all replies, with coverage based on the supplied data.
 Use only provided source IDs. Evaluate the buyer and EVERY supplier dynamically,
 regardless of the number or identities in the packet. Order risks and questions by decision
 impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
@@ -132,9 +136,11 @@ Evaluate technical fit, cost coverage, delivery, and commercial risk without
 inventing priorities or weighted scores. Recommend who to pursue, conditionally;
 do not award business or declare an unconditional cheapest supplier from partial
 totals. If information cannot support a shortlist, explain the blockers instead.
-Ask for missing required revision, finish, destination, releases, delivery date,
-and buyer priorities. A supplier's rev C or DDP destination is not a buyer
-requirement. Distinguish nominal production/shipping durations from full delivered
+Identify missing requirements actually needed to assess this RFQ. Drawing revision,
+finish and tooling are relevant only when the item or buyer context makes them so;
+do not create questions or blockers solely because an optional field is null.
+No particular drawing revision or supplier delivery destination establishes a
+buyer requirement. Distinguish nominal production/shipping durations from full delivered
 lead time, startup from steady state, and stock at supplier from delivered service.
 Explain material unknowns, tooling amortization ambiguity, refundable deposit
 conditions, subcontracted processes, validity without an issue date, and payment

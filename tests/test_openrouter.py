@@ -59,7 +59,7 @@ class OpenRouterTests(unittest.TestCase):
         send.return_value.__enter__.return_value = io.BytesIO(json.dumps({
             "choices": [{"finish_reason": "length", "message": {"content": "partial"}}],
         }).encode())
-        with self.assertRaisesRegex(OpenRouterError, "did not finish"):
+        with self.assertRaisesRegex(OpenRouterError, "output token limit"):
             self.client.complete([])
 
     @patch("procurement_agent.openrouter.urlopen")

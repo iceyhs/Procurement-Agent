@@ -5,6 +5,13 @@ quotes against a buyer's requirements and produces an evidence-backed Markdown
 report. It uses OpenRouter, Python's standard library, and `python-dotenv` for the
 interactive chat entry point.
 
+The bracket exercise is an example, not a runtime preset. Each run takes the item,
+quantity and its basis, currency, relevant specifications, and supplier set from
+the input. Optional manufacturing fields do not automatically create requirements
+or follow-up questions for unrelated purchases. The MVP compares unit-priced goods
+for one RFQ per run; mixed measurement units or service pricing need explicit
+normalization support rather than being silently treated as per-piece prices.
+
 ## Setup
 
 ```bash
@@ -96,8 +103,12 @@ Tooling USD 6,200. Lead time 4 weeks from release. Net 30.
 The complete four-supplier exercise is in `examples/quote_packet.txt`. Say
 "a year" when quantity means annual demand: "60,000 units" alone is unspecified.
 Missing revision, finish, destination, delivery date, and other requirements are
-reported as unknown rather than inferred from suppliers. Limits: 100,000 UTF-8
-bytes and eight supplier replies per run.
+reported as unknown rather than inferred from suppliers. The number of replies is
+derived from the separator blocks: five, six, or more use the same workflow. There
+is no fixed supplier-count cap. The input limit remains 100,000 UTF-8 bytes, and
+each model request is bounded by its context/output capacity. Output budgets grow
+with the number of replies up to 16,000 tokens; oversized responses fail clearly
+rather than producing an incomplete comparison.
 
 ### Report
 
@@ -115,8 +126,9 @@ warnings, detected risks, and comparability gaps) alongside the validated facts.
 The model authors each question, including questions about novel commercial terms.
 The renderer displays those questions, removes exact duplicates, and groups them
 by priority. Owners without useful questions need not receive generic busywork.
-Supplier IDs and schemas come from the input blocks; adding a fifth supplier uses
-the same workflow and requires no code changes (the eight-supplier limit remains).
+Supplier IDs and schemas come from the input blocks; adding suppliers requires no
+code changes. Detailed terms are displayed in groups of at most four columns for
+readability; the shortlist still includes every supplier in one comparison.
 
 Unit-price extensions are not landed costs or confirmed ordering plans. Currencies
 remain separate. Bare `$` is retained as quoted. When this RFQ also contains an

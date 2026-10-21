@@ -50,7 +50,7 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         evidence[key] = value["evidence"]
         return f"{_escape(value['value'])}[^{key}]"
 
-    lines = ["# Procurement report", ""]
+    lines = ["# Procurement report", "", f"Comparing {len(suppliers)} supplier replies for this RFQ.", ""]
     if validation_warnings:
         lines += ["**Data quality:** Some terms need confirmation. Unverified values are excluded "
                   "from affected totals; see the concise notes below.", ""]
@@ -62,9 +62,8 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         "Price extensions are arithmetic scenarios, not confirmed ordering plans or landed costs. "
         "Unknown charges are not zero. No FX conversion, automatic discount, index adjustment, "
         "or tooling-amortization saving is applied. Contextual currency assumptions are labelled inferred and require confirmation.", "",
-        "| Field | " + " | ".join(_escape(names[item["source_id"]]) for item in suppliers) + " |",
-        "| --- | " + " | ".join("---" for _ in suppliers) + " |",
     ]
+    comparison_rows = []
     labels = {
         "supplier": "Supplier / source", "part": "Part", "revision": "Drawing revision",
         "material_finish": "Material / finish statements", "quoted_price": "Original quoted price",
@@ -87,9 +86,9 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                 quoted = f"; quoted {_escape(item[field]['value'])}" if info["status"] == "inferred" else ""
                 cell = f"{_escape(info['code'])} ({info['status']}{quoted})[^{source_id}-{field}]"
             cells.append(cell)
-        lines.append(f"| {label} | " + " | ".join(cells) + " |")
-    lines.append("| Currency basis | " + " | ".join(_escape(item["currency_info"]["note"]) for item in calculations) + " |")
-    lines.append("| Delivery-cost coverage | " + " | ".join(_escape(item["cost_comparability_note"]) for item in calculations) + " |")
+        comparison_rows.append([label, *cells])
+    comparison_rows.append(["Currency basis", *[_escape(item["currency_info"]["note"]) for item in calculations]])
+    comparison_rows.append(["Delivery-cost coverage", *[_escape(item["cost_comparability_note"]) for item in calculations]])
     annual = extraction["buyer"]["quantity_basis"]["value"] == "annual"
     computed = [
         ("Nominal unit price / piece (not landed cost)", "normalized_unit_price", 6),
@@ -107,7 +106,19 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
             if result[field] is not None and inferred:
                 cell += " (inferred currency)"
             cells.append(cell)
-        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+        comparison_rows.append([label, *cells])
+    # This is a presentation width, not a limit on suppliers in the comparison.
+    for start in range(0, len(suppliers), 4):
+        group = suppliers[start:start + 4]
+        if len(suppliers) > 4:
+            lines += [f"#### Supplier details {start + 1}–{start + len(group)}", ""]
+        lines += [
+            "| Field | " + " | ".join(_escape(names[item["source_id"]]) for item in group) + " |",
+            "| --- | " + " | ".join("---" for _ in group) + " |",
+        ]
+        for row in comparison_rows:
+            lines.append("| " + " | ".join([row[0], *row[start + 1:start + 1 + len(group)]]) + " |")
+        lines.append("")
     lines += [
         "", "Calculated rows use the cited original price, price basis, buyer quantity, and stated tooling. "
         "Deposits remain separate. Unit prices are displayed to at most six decimal places; "

@@ -85,6 +85,8 @@ class OpenRouterClient:
         try:
             choice = payload["choices"][0]
             content = choice["message"]["content"]
+            if choice.get("finish_reason") == "length":
+                raise OpenRouterError("OpenRouter response reached the output token limit. Reduce packet size; no complete result is available.")
             if choice.get("finish_reason") != "stop":
                 raise OpenRouterError("OpenRouter response did not finish normally; no complete result available.")
             if not isinstance(content, str) or not content.strip():

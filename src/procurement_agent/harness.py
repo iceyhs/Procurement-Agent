@@ -77,7 +77,7 @@ class ReviewHarness:
         self._progress(f"Parsed buyer requirements and {len(state.packet.suppliers)} supplier replies.")
         state.extraction = self._request(
             state, EXTRACTION_PROMPT, {"sources": state.packet.numbered_sources},
-            validate_extraction, max_tokens=14000, stage="Extraction",
+            validate_extraction, max_tokens=min(16000, max(14000, 1000 * len(state.packet.suppliers))), stage="Extraction",
             response_format=extraction_format(list(state.packet.sources)[1:]),
             allow_partial=True,
         )
@@ -93,7 +93,7 @@ class ReviewHarness:
             state, ANALYSIS_PROMPT,
             {"extraction": analysis_extraction, "calculations": state.calculations,
              "follow_up_context": follow_up_context(state.extraction, state.calculations)},
-            validate_analysis, max_tokens=6000, stage="Analysis",
+            validate_analysis, max_tokens=min(16000, max(6000, 800 * len(state.packet.suppliers))), stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )
         self._progress("Rendering the report...")

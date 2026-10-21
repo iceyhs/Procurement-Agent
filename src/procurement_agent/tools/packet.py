@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from pathlib import Path
 
 MAX_INPUT_BYTES = 100_000
-MAX_SUPPLIERS = 8
 SEPARATOR = re.compile(r"^\s*===\s*PACKET\s*===\s*$", re.MULTILINE)
 
 
@@ -38,8 +37,6 @@ def parse_packet(text: str) -> Packet:
             "Put buyer requirements first, then separate each supplier reply "
             "with a line containing ===PACKET===. Blocks must not be empty."
         )
-    if len(blocks) - 1 > MAX_SUPPLIERS:
-        raise ValueError(f"At most {MAX_SUPPLIERS} supplier replies are supported.")
     return Packet(blocks[0], tuple(blocks[1:]))
 
 

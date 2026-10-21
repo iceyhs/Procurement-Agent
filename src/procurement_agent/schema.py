@@ -270,8 +270,9 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
     for section in ("risks", "recommendation", "follow_up_questions"):
         items = data[section]
         minimum = 0 if section == "follow_up_questions" else 1
-        if not isinstance(items, list) or not minimum <= len(items) <= 40:
-            _fail(f"{section}: expected {minimum} to 40 items.")
+        maximum = len(supplier_ids) if section == "recommendation" else max(40, 6 * len(sources))
+        if not isinstance(items, list) or not minimum <= len(items) <= maximum:
+            _fail(f"{section}: expected {minimum} to {maximum} items.")
         for item in items:
             fields = {
                 "risks": ("text", "source_ids"),

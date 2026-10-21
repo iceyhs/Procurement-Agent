@@ -172,8 +172,8 @@ class PacketTests(unittest.TestCase):
         self.assertEqual(packet.buyer, "BRK-4471-A\n60,000 units")
         self.assertEqual(packet.sources["supplier_2"], "Chat reply")
 
-    def test_reject_empty_missing_separator_empty_blocks_and_excess(self):
-        for text in ("", "No replies", "===PACKET===\nReply", "Buyer\n===PACKET===", "Buyer\n" + "===PACKET===\nReply\n" * 9):
+    def test_reject_empty_missing_separator_and_empty_blocks(self):
+        for text in ("", "No replies", "===PACKET===\nReply", "Buyer\n===PACKET==="):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 parse_packet(text)
 
@@ -774,6 +774,91 @@ class DynamicFollowUpTests(unittest.TestCase):
         self.assertIn("supplier_5", analysis_contract["properties"]["follow_up_questions"]["items"]["properties"]["owner"]["enum"])
         self.assertIn("### Forge Delta", report)
         self.assertIn(question, report)
+
+
+def variable_supplier_fixture(count, *, part="BRK-4471-A", quantity=60000, revision="C", currency="USD", annual=True):
+    """Synthetic packet and structured responses for arbitrary supplier counts."""
+    quantity_text = f"{quantity:,} units a year" if annual else f"{quantity:,} units for this order"
+    revision_text = f"Required drawing Rev {revision}" if revision else "Description: Rubber sealing ring"
+    buyer_text = f"Part {part}\n{quantity_text}\n{revision_text}\nShip to Columbus, Ohio"
+    buyer = {field: fact() for field in BUYER_FIELDS}
+    buyer.update({"part": fact(part, "L1"), "quantity": fact(str(quantity), "L2"),
+                  "quantity_basis": fact("annual" if annual else "order", "L2"), "revision": fact(revision, "L3") if revision else fact(),
+                  "destination": fact("Columbus, Ohio", "L4")})
+    if not revision:
+        buyer["description"] = fact("Rubber sealing ring", "L3")
+    blocks = [buyer_text]
+    suppliers, recommendations, questions = {}, {}, [{
+        "owner": "buyer", "priority": "blocking", "text": "What release schedule is required?" if annual else "When must this order arrive?", "source_ids": ["buyer"],
+    }]
+    for index in range(1, count + 1):
+        source_id = f"supplier_{index}"
+        name, price = f"Variable Vendor {index}", f"5.{index:02d}"
+        quoted_part = f"Part {part} drawing Rev {revision}" if revision else f"Part {part}"
+        blocks.append(f"{name}\n{quoted_part}\n{currency} {price} per piece\nTooling included\nDDP Columbus, Ohio\nLead time 4 weeks from release")
+        suppliers[source_id] = {field: fact() for field in SUPPLIER_FIELDS}
+        suppliers[source_id].update({
+            "supplier": fact(name, "L1"), "part": fact(part, "L2"), "revision": fact(revision, "L2") if revision else fact(),
+            "quoted_price": fact(price, "L3"), "price_basis_quantity": fact("1", "L3"), "currency": fact(currency, "L3"),
+            "tooling_terms": fact("Included", "L4"), "delivery_terms": fact("DDP Columbus, Ohio", "L5"),
+            "lead_time": fact("4 weeks from release", "L6"),
+        })
+        recommendations[source_id] = {"action": "advance", "text": "Clarify commercial terms before selection.", "source_ids": [source_id]}
+        question = f"Will you hold {currency} {price} per piece for our planned release quantities?" if annual else "What payment terms apply to this order?"
+        questions.append({"owner": source_id, "priority": "important", "text": question, "source_ids": [source_id]})
+    return "\n===PACKET===\n".join(blocks), {"buyer": buyer, "suppliers": suppliers}, {
+        "risks": [{"text": "The buyer release schedule is unspecified." if annual else "Required arrival date is unspecified.", "source_ids": ["buyer"]}],
+        "recommendation": recommendations, "follow_up_questions": questions,
+    }
+
+
+class VariableSupplierCountTests(unittest.TestCase):
+    def test_a_different_product_quantity_currency_and_order_basis_are_input_driven(self):
+        text, extraction, analysis = variable_supplier_fixture(6, part="SEAL-920", quantity=1200, revision=None, currency="EUR", annual=False)
+        client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis)]))
+        report = ProcurementAgent(client).review(text)
+        payload = json.loads(client.complete.call_args_list[1].args[0][1]["content"])
+        self.assertEqual(payload["extraction"]["buyer"]["quantity"]["value"], "1200")
+        self.assertEqual(payload["extraction"]["buyer"]["quantity_basis"]["value"], "order")
+        self.assertEqual(payload["calculations"][0]["quantity_price_extension"], "6012.00")
+        self.assertTrue(all(item["revision_blocker"] is None for item in payload["calculations"]))
+        self.assertIn("SEAL-920", report)
+        self.assertIn("Rubber sealing ring", report)
+        self.assertIn("EUR 6,012.00", report)
+        for unrelated in ("BRK-4471-A", "60,000", "USD 5.01", "Drawing revision blocker", "Annual price extension"):
+            self.assertNotIn(unrelated, report)
+        follow_ups = report.split("## 4. Follow-up questions", 1)[1]
+        self.assertIn("payment terms", follow_ups)
+        self.assertNotIn("drawing revision", follow_ups)
+
+    def test_one_five_six_and_twelve_replies_use_the_same_pipeline(self):
+        for count in (1, 5, 6, 12):
+            with self.subTest(count=count):
+                text, extraction, analysis = variable_supplier_fixture(count)
+                client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis)]))
+                report = ProcurementAgent(client).review(text)
+                self.assertEqual(client.complete.call_count, 2)
+                self.assertIn(f"Comparing {count} supplier replies", report)
+                expected = {f"supplier_{i}" for i in range(1, count + 1)}
+                request = json.loads(client.complete.call_args_list[1].args[0][1]["content"])
+                self.assertEqual({item["source_id"] for item in request["extraction"]["suppliers"]}, expected)
+                self.assertEqual(set(request["follow_up_context"]), {"buyer", *expected})
+                for index in range(1, count + 1):
+                    self.assertIn(f"| Variable Vendor {index} | **Shortlist / advance**", report)
+                    self.assertIn(f"### Variable Vendor {index}\n", report)
+                headers = [line for line in report.splitlines() if line.startswith("| Field |")]
+                self.assertEqual(len(headers), (count + 3) // 4)
+                self.assertTrue(all(line.count("Variable Vendor") <= 4 for line in headers))
+                if count > 8:
+                    self.assertGreater(client.complete.call_args_list[1].kwargs["max_tokens"], 6000)
+
+    def test_recommendation_count_is_not_limited_to_forty(self):
+        text, extraction, analysis = variable_supplier_fixture(41)
+        sources = parse_packet(text).sources
+        self.assertEqual(len(validate_extraction(extraction, sources)["suppliers"]), 41)
+        result = validate_analysis(analysis, sources)
+        self.assertEqual(len(result["recommendation"]), 41)
+        self.assertEqual(len(result["follow_up_questions"]), 42)
 
 
 class ReportWriteTests(unittest.TestCase):

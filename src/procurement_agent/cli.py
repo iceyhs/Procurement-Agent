@@ -4,19 +4,24 @@ from pathlib import Path
 
 from .agent import ProcurementAgent
 from .openrouter import OpenRouterClient, OpenRouterError
+from .tools.packet import read_packet
+from .tools.report import check_output, write_report
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Procurement Agent (initial skeleton)")
+    parser = argparse.ArgumentParser(description="Evidence-backed procurement quote review")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("check", help="Make a small, billable OpenRouter connection check")
-    review = commands.add_parser("review", help="Send a UTF-8 quote packet for preliminary review")
+    review = commands.add_parser("review", help="Review a quote packet and save a Markdown report")
     review.add_argument("packet", type=Path)
+    review.add_argument("-o", "--output", type=Path, default=Path("report.md"))
+    review.add_argument("--force", action="store_true", help="Replace an existing report after a successful review")
     args = parser.parse_args(argv)
     try:
-        packet = args.packet.read_text(encoding="utf-8") if args.command == "review" else None
-        if packet is not None and not packet.strip():
-            raise ValueError("Quote packet is empty.")
+        packet = None
+        if args.command == "review":
+            packet = read_packet(args.packet)
+            check_output(args.output, args.packet, args.force)
         client = OpenRouterClient.from_env()
         if args.command == "check":
             result = client.complete([
@@ -26,7 +31,9 @@ def main(argv=None) -> int:
                 raise OpenRouterError("Received a completion, but the connection check response was unexpected.")
             print(f"OpenRouter connection verified ({client.model}).")
         else:
-            print(ProcurementAgent(client).review(packet))
+            report = ProcurementAgent(client).review(packet)
+            write_report(args.output, report, args.force)
+            print(f"Report saved to {args.output}")
         return 0
     except (OpenRouterError, OSError, UnicodeError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)

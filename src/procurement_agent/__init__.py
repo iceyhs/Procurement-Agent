@@ -1,1 +1,1 @@
-"""Procurement agent skeleton."""
+"""Evidence-backed procurement quote reconciliation."""

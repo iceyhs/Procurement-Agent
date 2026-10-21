@@ -39,6 +39,13 @@ class OpenRouterTests(unittest.TestCase):
         with self.assertRaisesRegex(OpenRouterError, "did not finish"):
             self.client.complete([])
 
+    @patch("procurement_agent.openrouter.urlopen")
+    def test_rejects_malformed_provider_response(self, send):
+        for payload in (None, [], {"choices": []}, {"choices": [None]}, {"choices": ["bad"]}):
+            send.return_value.__enter__.return_value = io.BytesIO(json.dumps(payload).encode())
+            with self.subTest(payload=payload), self.assertRaisesRegex(OpenRouterError, "no usable"):
+                self.client.complete([])
+
     @patch.dict("os.environ", {}, clear=True)
     @patch("sys.stderr", new_callable=io.StringIO)
     def test_cli_missing_credentials(self, stderr):

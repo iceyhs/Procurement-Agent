@@ -140,7 +140,7 @@ def analysis_example():
         "recommendation": [
             {"supplier_id": "supplier_1", "action": "advance", "text": "Pursue a firm delivered offer; confirm revision and planned releases.", "source_ids": ["buyer", "supplier_1"]},
             {"supplier_id": "supplier_2", "action": "advance", "text": "Pursue for stated DDP coverage; clarify index adjustments and tooling amortization.", "source_ids": ["supplier_2"]},
-            {"supplier_id": "supplier_3", "action": "hold", "text": "Ask the buyer to establish the required revision before checking compliance; freight and duty remain excluded.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
+            {"supplier_id": "supplier_3", "action": "do_not_advance", "text": "Resolve the explicit Rev B quote basis before progressing technical evaluation: obtain the buyer's required revision and supplier compliance confirmation or a re-quote. Freight and duty are also excluded.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
             {"supplier_id": "supplier_4", "action": "hold", "text": "Obtain firm pricing and tooling, and confirm currency and drawing revision.", "source_ids": ["supplier_4"]},
         ],
         "follow_up_questions": [
@@ -150,11 +150,11 @@ def analysis_example():
             {"owner": "supplier_1", "priority": "important", "fields": ["currency", "revision", "material_finish", "delivery_terms", "release_schedule"], "text": "Please confirm currency, required-revision compliance, finish inclusion, delivered freight and price for the planned release schedule.", "source_ids": ["supplier_1"]},
             {"owner": "supplier_2", "priority": "important", "fields": ["tooling_terms", "price_adjustment", "deposit_terms", "validity"], "text": "Please explain post-amortization pricing, the index adjustment formula, deposit recovery and quote issue date.", "source_ids": ["supplier_2"]},
             {"owner": "supplier_3", "priority": "blocking", "fields": ["revision"], "text": "Can you re-quote against the buyer-confirmed current drawing revision?", "source_ids": ["supplier_3", "buyer"]},
-            {"owner": "supplier_3", "priority": "blocking", "fields": ["delivery_terms"], "text": "What freight and duty charges apply to the buyer destination?", "source_ids": ["supplier_3"]},
-            {"owner": "supplier_3", "priority": "blocking", "fields": ["lead_time"], "text": "Does the quoted lead time include end-to-end transit through final delivery?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_3", "priority": "important", "fields": ["delivery_terms"], "text": "What freight and duty charges apply to the buyer destination?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_3", "priority": "important", "fields": ["lead_time"], "text": "Does the quoted lead time include end-to-end transit through final delivery?", "source_ids": ["supplier_3"]},
             {"owner": "supplier_4", "priority": "blocking", "fields": ["tooling_amount"], "text": "What is the tooling cost after engineering review?", "source_ids": ["supplier_4"]},
-            {"owner": "supplier_4", "priority": "blocking", "fields": ["currency"], "text": "Can you confirm the pricing currency explicitly?", "source_ids": ["supplier_4"]},
-            {"owner": "supplier_4", "priority": "blocking", "fields": ["revision"], "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "important", "fields": ["currency"], "text": "Can you confirm the pricing currency explicitly?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "important", "fields": ["revision"], "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
         ],
     }
 
@@ -655,7 +655,7 @@ class BuyerReportQualityTests(unittest.TestCase):
         report = self.report()
         for supplier in ("Nordkant Prazisionsteile GmbH", "Pacific Rim Components"):
             row = next(line for line in report.splitlines() if line.startswith(f"| {supplier} |"))
-            self.assertIn("Hold / needs clarification", row)
+            self.assertIn("Shortlist / advance with clarification", row)
             self.assertIn("buyer's required revision is unknown", row)
             self.assertIn("Nordkant Prazisionsteile GmbH", row)
             self.assertIn("Rev C", row)
@@ -681,6 +681,7 @@ class BuyerReportQualityTests(unittest.TestCase):
         report = self.report()
         self.assertIn("Shortlist / advance", report)
         self.assertIn("Hold / needs clarification", report)
+        self.assertIn("Do not advance yet", report)
         pacific = report.split("### Pacific Rim Components\n", 1)[1].split("### Brightwater Precision", 1)[0]
         for expected in ("Resolve first", "re-quote", "drawing revision", "freight and duty", "buyer destination", "end-to-end transit"):
             self.assertIn(expected, pacific)
@@ -732,6 +733,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         risks = context["buyer"]["detected_risks"]
         self.assertEqual({risk["field"] for risk in risks}, {"revision", "destination", "release_schedule"})
         self.assertTrue(all(risk["blocking"] and risk["resolution_owner"] == "buyer" for risk in risks))
+        self.assertTrue(all(risk["blocks"] == "final_comparison" and not risk["blocks_shortlisting"] for risk in risks))
         revision = next(risk for risk in risks if risk["field"] == "revision")
         self.assertIn("Nordkant Prazisionsteile GmbH references drawing revision C", revision["detail"])
         self.assertIn("supplier_2", revision["source_ids"])
@@ -769,7 +771,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         context = follow_up_context(data, calculate_amounts(data))
         self.assertEqual(context["buyer"]["detected_risks"], [])
         analysis = analysis_example()
-        analysis["follow_up_questions"] = []
+        analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "buyer"]
         validate_analysis(analysis, parse_packet(EXAMPLE.read_text()).sources, follow_up_context=context)
 
     def test_harness_requests_model_authored_buyer_questions_when_omitted(self):
@@ -795,6 +797,52 @@ class DynamicFollowUpTests(unittest.TestCase):
         self.assertIn("Resolve first", buyer_section)
         for question in questions.values():
             self.assertIn(question, buyer_section)
+
+    def test_shared_unknowns_allow_a_differentiated_shortlist_and_supplier_follow_ups(self):
+        client = Mock(complete=Mock(side_effect=[json.dumps(model_extraction()), json.dumps(model_analysis())]))
+        report = ProcurementAgent(client).review(EXAMPLE.read_text())
+        expected = {
+            "Tri-State Metalcraft": "Shortlist / advance with clarification",
+            "Nordkant Prazisionsteile GmbH": "Shortlist / advance with clarification",
+            "Pacific Rim Components": "Do not advance yet",
+            "Brightwater Precision": "Hold / needs clarification",
+        }
+        for supplier, action in expected.items():
+            self.assertIn(f"| {supplier} | **{action}**", report)
+            questions = report.split(f"### {supplier}\n", 1)[1].split("### ", 1)[0]
+            self.assertNotIn("No follow-up questions drafted", questions)
+        self.assertIn("Pursue for stated DDP coverage", report)
+        self.assertIn("buyer requirements for final comparison", report)
+        self.assertIn("supplier-specific issues", report)
+        self.assertNotIn("buyer-required Rev C", report)
+        self.assertEqual(client.complete.call_count, 2)
+
+    def test_buyer_questions_cannot_replace_supplier_specific_actions(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        for owner in ("supplier_1", "supplier_3", "supplier_4"):
+            analysis = analysis_example()
+            analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != owner]
+            with self.subTest(owner=owner), self.assertRaisesRegex(ValidationError, f"Missing supplier follow-ups: {owner}"):
+                validate_analysis(analysis, sources, follow_up_context=context)
+
+    def test_do_not_advance_needs_a_blocking_question_grounded_in_that_quote(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        for change in ("nonblocking", "buyer_sources_only", "no_supplier_reason"):
+            analysis = analysis_example()
+            for q in analysis["follow_up_questions"]:
+                if q["owner"] == "supplier_3":
+                    if change == "nonblocking":
+                        q["priority"] = "important"
+                    elif change == "buyer_sources_only":
+                        q["source_ids"] = ["buyer"]
+            if change == "no_supplier_reason":
+                analysis["recommendation"][2]["source_ids"] = ["buyer"]
+            with self.subTest(change=change), self.assertRaisesRegex(ValidationError, "supplier_3: do_not_advance requires a supplier-specific blocker"):
+                validate_analysis(analysis, sources, follow_up_context=context)
 
     def test_renderer_uses_only_model_questions_and_sorts_priorities(self):
         data = extracted_example()
@@ -905,6 +953,40 @@ def variable_supplier_fixture(count, *, part="BRK-4471-A", quantity=60000, revis
 
 
 class VariableSupplierCountTests(unittest.TestCase):
+    def test_new_supplier_material_gap_gets_its_own_model_authored_question(self):
+        text, extraction, analysis = variable_supplier_fixture(6)
+        blocks = text.split("===PACKET===")
+        blocks[-1] = blocks[-1].replace("Tooling included", "Tooling pending fixture design review")
+        text = "===PACKET===".join(blocks)
+        extraction["suppliers"]["supplier_6"]["tooling_terms"] = fact("Pending fixture design review", "L4")
+        analysis["recommendation"]["supplier_6"] = {
+            "action": "hold", "text": "Resolve tooling after fixture design review before firm cost comparison.", "source_ids": ["supplier_6"],
+        }
+        analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "supplier_6"]
+        corrected = copy.deepcopy(analysis)
+        question = "When will fixture design review establish the tooling charge, and what will that charge be?"
+        corrected["follow_up_questions"].append({
+            "owner": "supplier_6", "priority": "important", "fields": ["tooling_terms", "tooling_amount"],
+            "text": question, "source_ids": ["supplier_6"],
+        })
+        client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis), json.dumps(corrected)]))
+        report = ProcurementAgent(client).review(text)
+        self.assertEqual(client.complete.call_count, 3)
+        self.assertIn("supplier_6: hold requires", client.complete.call_args_list[2].args[0][-1]["content"])
+        self.assertIn("| Variable Vendor 6 | **Hold / needs clarification**", report)
+        self.assertIn(question, report.split("### Variable Vendor 6\n", 1)[1])
+        for index in range(1, 6):
+            self.assertIn(f"| Variable Vendor {index} | **Shortlist / advance with clarification**", report)
+
+    def test_clear_offer_does_not_require_busywork_supplier_questions(self):
+        text, extraction, analysis = variable_supplier_fixture(1, annual=False)
+        analysis["follow_up_questions"] = []
+        client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis)]))
+        report = ProcurementAgent(client).review(text)
+        self.assertEqual(client.complete.call_count, 2)
+        self.assertIn("| Variable Vendor 1 | **Shortlist / advance with clarification**", report)
+        self.assertIn("No follow-up questions drafted for this party.", report)
+
     def test_a_different_product_quantity_currency_and_order_basis_are_input_driven(self):
         text, extraction, analysis = variable_supplier_fixture(6, part="SEAL-920", quantity=1200, revision=None, currency="EUR", annual=False)
         client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis)]))
@@ -936,7 +1018,7 @@ class VariableSupplierCountTests(unittest.TestCase):
                 self.assertEqual({item["source_id"] for item in request["extraction"]["suppliers"]}, expected)
                 self.assertEqual(set(request["follow_up_context"]), {"buyer", *expected})
                 for index in range(1, count + 1):
-                    self.assertIn(f"| Variable Vendor {index} | **Shortlist / advance**", report)
+                    self.assertIn(f"| Variable Vendor {index} | **Shortlist / advance with clarification**", report)
                     self.assertIn(f"### Variable Vendor {index}\n", report)
                 headers = [line for line in report.splitlines() if line.startswith("| Field |")]
                 self.assertEqual(len(headers), (count + 3) // 4)

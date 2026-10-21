@@ -116,7 +116,9 @@ rather than producing an incomplete comparison.
    normalization, conditional quantity extensions, and exact source excerpts.
 2. **Risks / unknowns** — harness warnings and model assessment.
 3. **Shortlist / recommendation** — explicit advance, hold, or do-not-advance action
-   per supplier; advancement means further clarification, not an award decision.
+   per supplier. Advance with clarification means pursue a conditional shortlist;
+   hold means a material supplier clarification is needed; do not advance means a
+   concrete supplier-specific blocker must be resolved. None approves an award.
 4. **Follow-up questions** — model-drafted questions grounded in this case's gaps
    and risks, grouped by owner and ordered as blocking, important, then optional.
 
@@ -126,6 +128,10 @@ warnings, detected risks, and comparability gaps) alongside the validated facts.
 The model authors each question, including questions about novel commercial terms.
 The renderer displays those questions, removes exact duplicates, and groups them
 by priority. Owners without useful questions need not receive generic busywork.
+Buyer questions establish shared requirements; supplier questions resolve that
+offer's own terms. Validation requires actionable supplier questions for hold/stop
+decisions and relevant questions for uncertain terms on conditionally advanced
+offers. A stop decision needs a blocking question referencing that supplier's quote.
 Supplier IDs and schemas come from the input blocks; adding suppliers requires no
 code changes. Detailed terms are displayed in groups of at most four columns for
 readability; the shortlist still includes every supplier in one comparison.
@@ -149,6 +155,13 @@ When the buyer's requirement is unknown, different supplier revisions are unreso
 comparison gaps for both offers; neither a later-looking revision nor a supplier's
 reference establishes the requirement. Missing buyer revision, destination or release
 schedule generates a blocking buyer issue when needed to assess the quoted terms.
+These issues block final comparison, not conditional shortlisting. Routine supplier
+uncertainties can be clarified in parallel. Differing quoted revisions remain a
+strong technical risk; the model may stop an offer with an explained reason and
+supplier follow-up without declaring another supplier's revision buyer-required.
+Only a confirmed buyer-revision mismatch automatically overrides the shortlist;
+unresolved revision differences preserve the model's action and supplier-specific
+reason alongside the warning.
 The model drafts the buyer questions; validation checks that they cover those issues
 as blocking, buyer-owned questions. Detailed validation reasons stay in run state;
 the buyer report groups them into concise data-quality notes and preserves evidence.

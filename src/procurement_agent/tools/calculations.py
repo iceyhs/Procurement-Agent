@@ -52,7 +52,7 @@ def _revision_comparability_gap(supplier, extraction):
         peer_name = peer["supplier"]["value"] or peer["source_id"]
         return (
             f"{name} quotes Rev {quoted}; {peer_name} references Rev {other}. "
-            "The buyer's required revision is unknown. Hold the technical comparison pending "
+            "The buyer's required revision is unknown. Technical equivalence is unconfirmed pending "
             "buyer confirmation; neither supplier's quoted revision establishes the requirement."
         )
     return None
@@ -98,6 +98,7 @@ def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
     def buyer_blocker(field, detail, related):
         context["buyer"]["detected_risks"].append({
             "field": field, "blocking": True, "resolution_owner": "buyer",
+            "blocks": "final_comparison", "blocks_shortlisting": False,
             "detail": detail, "source_ids": ["buyer", *related],
         })
 
@@ -126,9 +127,13 @@ def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
         if calculation["tooling_amount"] is not None and calculation["tooling_currency_info"]["status"] != "explicit":
             issue["uncertain_fields"].append("tooling_currency")
         if calculation["revision_blocker"]:
-            issue["detected_risks"].append({"field": "revision", "blocking": True, "detail": calculation["revision_blocker"]})
+            issue["detected_risks"].append({"field": "revision", "blocking": True,
+                                           "blocks": "supplier_advancement", "resolution_owner": owner,
+                                           "detail": calculation["revision_blocker"]})
         if calculation["revision_comparability_gap"]:
-            issue["detected_risks"].append({"field": "revision", "blocking": True, "resolution_owner": "buyer", "detail": calculation["revision_comparability_gap"]})
+            issue["detected_risks"].append({"field": "revision", "blocking": True,
+                                           "blocks": "technical_comparison", "resolution_owner": "buyer",
+                                           "detail": calculation["revision_comparability_gap"]})
         qualification = records[owner]["price_qualification"]["value"]
         if qualification and re.search(r"around|approx|indicative|estimat|subject to|pending|confirm|provisional", qualification, re.IGNORECASE):
             issue["uncertain_fields"].append("price_qualification")

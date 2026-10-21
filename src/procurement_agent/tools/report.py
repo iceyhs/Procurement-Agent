@@ -133,7 +133,7 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     buyer_risks = follow_up_context(extraction, calculations)["buyer"]["detected_risks"]
     for risk in buyer_risks:
         label = {"revision": "Required drawing revision", "destination": "Buyer destination", "release_schedule": "Release schedule"}.get(risk["field"], risk["field"].replace("_", " "))
-        lines.append(f"- **Buyer clarification required — {_escape(label)}:** {_escape(risk['detail'])}")
+        lines.append(f"- **Before final comparison — {_escape(label)}:** {_escape(risk['detail'])}")
     for result in calculations:
         if result["revision_blocker"]:
             lines.append(f"- **Drawing revision blocker — {_escape(names[result['source_id']])}:** {_escape(result['revision_blocker'])}")
@@ -156,17 +156,21 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                              "These terms could not be verified from the reply; related totals may be unavailable. "
                              "This does not establish that the supplier omitted them.")
     lines += ["", "## 3. Shortlist / recommendation", "",
-              "Advance means pursue clarification or a firm offer, not approve a purchase.", "",
+              "Advance means pursue clarification or a firm offer, not approve a purchase. "
+              "Shared buyer unknowns can prevent a final comparison while allowing conditional shortlisting. "
+              "Hold identifies a material clarification need; do not advance identifies a supplier-specific blocker.", "",
               "| Supplier | Action | Reason / next step |", "| --- | --- | --- |"]
     decisions = {item["supplier_id"]: item for item in analysis["recommendation"]}
-    action_labels = {"advance": "Shortlist / advance", "hold": "Hold / needs clarification", "do_not_advance": "Do not advance yet"}
+    action_labels = {"advance": "Shortlist / advance with clarification", "hold": "Hold / needs clarification", "do_not_advance": "Do not advance yet"}
     for supplier in suppliers:
         source_id = supplier["source_id"]
         decision = decisions[source_id]
         blocker = amounts[source_id]["revision_blocker"]
         revision_gap = amounts[source_id]["revision_comparability_gap"]
-        action = "do_not_advance" if blocker else "hold" if revision_gap and decision["action"] == "advance" else decision["action"]
-        reason = blocker or revision_gap or decision["text"]
+        action = "do_not_advance" if blocker else decision["action"]
+        reason = blocker or decision["text"]
+        if revision_gap and not blocker:
+            reason += " " + revision_gap
         lines.append(f"| {_escape(names[source_id])} | **{action_labels[action]}** | {_escape(reason)} |")
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():
@@ -181,6 +185,8 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                     selected.append(item)
                     seen.add(key)
             if selected:
+                if priority == "blocking":
+                    label += " — buyer requirements for final comparison" if owner == "buyer" else " — supplier-specific issues"
                 lines += [f"**{label}:**", ""]
                 assessment(selected)
                 lines.append("")

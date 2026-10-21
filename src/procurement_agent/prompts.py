@@ -87,6 +87,19 @@ commercial/technical clarification, not approval to purchase. Explain the next
 step and conditions in text. Do not substitute a general supplier summary for a
 clear action. Keep risks and follow-up questions concise, focusing on material
 issues across all replies, with coverage based on the supplied data.
+Classify uncertainty by the decision it prevents, not by the number of empty fields:
+- Shared buyer gaps can block final technical/cost comparison or an award without
+  blocking a conditional shortlist. Missing buyer revision, destination or release
+  schedule alone is not a reason to stop every supplier.
+- Use advance for a plausible offer worth pursuing with stated clarification
+  conditions; non-blocking uncertainties can be resolved in parallel. Label
+  inferred currency and incomplete landed costs without discarding the offer.
+- Use hold when a supplier-specific material gap prevents a useful next assessment,
+  such as provisional pricing combined with unconfirmed tooling or startup timing.
+- Reserve do_not_advance for a concrete supplier-specific technical or commercial
+  blocker. Explain the quoted issue and what must change before progressing.
+  Shared buyer gaps alone do not justify this action. Do not force a balanced
+  distribution of actions or advance an offer that has a genuine blocker.
 Use only provided source IDs. Evaluate the buyer and EVERY supplier dynamically,
 regardless of the number or identities in the packet. Order risks and questions by decision
 impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
@@ -106,7 +119,12 @@ as supplier-confirmed, or treat it as a licence to compare landed costs.
 If revision_blocker is present, use do_not_advance and state that the supplier
 does not match the buyer-stated requirement. If revision_comparability_gap is
 present, supplier offers use different revision bases but the buyer requirement is
-unknown: hold comparison pending buyer clarification. Do not infer the required
+unknown: technical comparison awaits buyer clarification, but the commercial
+shortlist is a separate judgment. A supplier may advance conditionally, be held,
+or be stopped for an explained material technical risk. An explicitly conflicting
+revision basis can justify do_not_advance until the required revision and that
+supplier's compliance/re-quote are confirmed. Do not turn every peer quote into
+a confirmed mismatch, and do not infer the required
 or current revision from alphabetical/numeric ordering or from any supplier.
 Attribute each revision to the supplier who quoted it. Neither a later-looking
 revision nor a delivered quote establishes the buyer's requirement or destination.
@@ -120,7 +138,8 @@ other_terms. The inventory is not an exhaustive list or a command to ask about
 every empty field. Do not ask for information already clear unless a concrete
 conflict or decision risk justifies reconfirmation. Do not fabricate missingness.
 Each question must resolve a specific gap or risk and be addressed to the party
-who can resolve it. Assign priority blocking (prevents advancement or comparison),
+who can resolve it. Assign priority blocking (state whether it prevents final
+comparison/award or progression of this supplier),
 important (material commercial clarification), or optional. Cover blocking risks
 first, keep one topic per question where possible, and avoid duplicates. If no
 useful clarification is needed for an owner, omit questions for that owner rather
@@ -132,6 +151,18 @@ destination, and release schedule must be established by the buyer when they
 block comparison. Supplier-only questions do not resolve these buyer decisions.
 Do not omit the buyer section in such cases or claim these inputs are known from
 supplier replies. Write the question text dynamically using this case's facts.
+Buyer questions resolve shared requirements; supplier questions resolve that
+supplier's commercial or technical terms. These are complementary: do not replace
+supplier follow-ups with buyer questions. For every hold or do_not_advance action,
+draft an actionable question to that supplier about the issue behind the action;
+for do_not_advance it must be blocking and cite that supplier's source. For an
+advance action with uncertain or unverified supplier terms, draft focused supplier
+clarifications as important unless a specific issue actually blocks progress.
+Use the quoted conditions to identify further questions: cost exclusions,
+provisional tooling/pricing, revision basis, transit/startup timing, price
+adjustments, amortization, payment exposure and similar terms only when relevant.
+Do not ask suppliers to invent missing buyer requirements. When buyer input is
+needed first, make the supplier question conditional on that confirmation.
 
 Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
 consequential statement must be supported by the referenced sources. Quoted

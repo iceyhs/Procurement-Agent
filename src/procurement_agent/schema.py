@@ -309,4 +309,21 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
         covered = {field for item in data["follow_up_questions"] if item["owner"] == "buyer" and item["priority"] == "blocking" for field in item["fields"]}
         if required - covered:
             _fail("Missing blocking buyer follow-up questions for: " + ", ".join(sorted(required - covered)) + ". Ask the buyer, not a supplier, to establish these requirements.")
+        missing_supplier_questions = []
+        for decision in data["recommendation"]:
+            owner = decision["supplier_id"]
+            issue = follow_up_context.get(owner, {})
+            uncertain = set(issue.get("uncertain_fields", []) + issue.get("validation_fields", []))
+            questions = [item for item in data["follow_up_questions"]
+                         if item["owner"] == owner and owner in item["source_ids"]
+                         and item["priority"] != "optional" and set(item["fields"]) & set(SUPPLIER_FIELDS)]
+            if decision["action"] == "do_not_advance":
+                if owner not in decision["source_ids"] or not any(q["priority"] == "blocking" for q in questions):
+                    missing_supplier_questions.append(f"{owner}: do_not_advance requires a supplier-specific blocker and a blocking question citing that supplier; shared buyer unknowns alone do not justify stopping the offer")
+            elif decision["action"] == "hold" and not questions:
+                missing_supplier_questions.append(f"{owner}: hold requires an actionable supplier-owned clarification question")
+            elif decision["action"] == "advance" and uncertain and not any(set(q["fields"]) & uncertain for q in questions):
+                missing_supplier_questions.append(f"{owner}: include an important supplier-owned question about uncertain or unverified terms ({', '.join(sorted(uncertain))})")
+        if missing_supplier_questions:
+            _fail("Missing supplier follow-ups: " + "; ".join(missing_supplier_questions[:12]))
     return data

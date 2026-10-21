@@ -74,6 +74,7 @@ def analysis_format(source_ids: list[str]) -> dict:
             "type": "array", "items": _object_schema({
                 **item, "owner": {"type": "string", "enum": source_ids},
                 "priority": {"type": "string", "enum": ["blocking", "important", "optional"]},
+                "fields": {"type": "array", "items": {"type": "string", "enum": list(dict.fromkeys((*BUYER_FIELDS, *SUPPLIER_FIELDS)))}},
             }),
         },
     }))
@@ -255,7 +256,7 @@ def validate_extraction(data: dict, sources: dict[str, str], *, allow_partial=Fa
     return data
 
 
-def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
+def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=None) -> dict:
     data = copy.deepcopy(data)
     _keys(data, ("risks", "recommendation", "follow_up_questions"), "analysis")
     supplier_ids = [source_id for source_id in sources if source_id != "buyer"]
@@ -277,7 +278,7 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
             fields = {
                 "risks": ("text", "source_ids"),
                 "recommendation": ("text", "source_ids", "supplier_id", "action"),
-                "follow_up_questions": ("text", "source_ids", "owner", "priority"),
+                "follow_up_questions": ("text", "source_ids", "owner", "priority", "fields"),
             }[section]
             _keys(item, fields, section)
             if not isinstance(item["text"], str) or not item["text"].strip() or len(item["text"]) > 2000:
@@ -292,6 +293,9 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
                     _fail("Follow-up owner must be buyer or a supplier source ID.")
                 if item["priority"] not in ("blocking", "important", "optional"):
                     _fail("Follow-up priority must be blocking, important, or optional.")
+                fields = item["fields"]
+                if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or field not in (*BUYER_FIELDS, *SUPPLIER_FIELDS) for field in fields):
+                    _fail("Follow-up fields must identify the terms the question addresses.")
             if section == "recommendation":
                 if not isinstance(item["supplier_id"], str) or item["supplier_id"] not in supplier_ids:
                     _fail("Recommendation must identify a supplier from this packet.")
@@ -300,4 +304,9 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
     recommendations = [item["supplier_id"] for item in data["recommendation"]]
     if len(recommendations) != len(supplier_ids) or set(recommendations) != set(supplier_ids):
         _fail("Include exactly one recommendation action for every supplier.")
+    if follow_up_context:
+        required = {risk["field"] for risk in follow_up_context.get("buyer", {}).get("detected_risks", []) if risk.get("blocking")}
+        covered = {field for item in data["follow_up_questions"] if item["owner"] == "buyer" and item["priority"] == "blocking" for field in item["fields"]}
+        if required - covered:
+            _fail("Missing blocking buyer follow-up questions for: " + ", ".join(sorted(required - covered)) + ". Ask the buyer, not a supplier, to establish these requirements.")
     return data

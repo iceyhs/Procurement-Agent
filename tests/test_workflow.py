@@ -140,19 +140,21 @@ def analysis_example():
         "recommendation": [
             {"supplier_id": "supplier_1", "action": "advance", "text": "Pursue a firm delivered offer; confirm revision and planned releases.", "source_ids": ["buyer", "supplier_1"]},
             {"supplier_id": "supplier_2", "action": "advance", "text": "Pursue for stated DDP coverage; clarify index adjustments and tooling amortization.", "source_ids": ["supplier_2"]},
-            {"supplier_id": "supplier_3", "action": "do_not_advance", "text": "Confirm the current drawing revision or re-quote before progressing; freight and duty remain excluded.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
+            {"supplier_id": "supplier_3", "action": "hold", "text": "Ask the buyer to establish the required revision before checking compliance; freight and duty remain excluded.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
             {"supplier_id": "supplier_4", "action": "hold", "text": "Obtain firm pricing and tooling, and confirm currency and drawing revision.", "source_ids": ["supplier_4"]},
         ],
         "follow_up_questions": [
-            {"owner": "buyer", "priority": "blocking", "text": "What revision, finish, destination, release schedule and delivery date are required, and how should cost versus responsiveness be prioritized?", "source_ids": ["buyer"]},
-            {"owner": "supplier_1", "priority": "important", "text": "Please confirm currency, required-revision compliance, finish inclusion, delivered freight and price for the planned release schedule.", "source_ids": ["supplier_1"]},
-            {"owner": "supplier_2", "priority": "important", "text": "Please explain post-amortization pricing, the index adjustment formula, deposit recovery and quote issue date.", "source_ids": ["supplier_2"]},
-            {"owner": "supplier_3", "priority": "blocking", "text": "Can you re-quote against the buyer-confirmed current drawing revision?", "source_ids": ["supplier_3", "buyer"]},
-            {"owner": "supplier_3", "priority": "blocking", "text": "What freight and duty charges apply to the buyer destination?", "source_ids": ["supplier_3"]},
-            {"owner": "supplier_3", "priority": "blocking", "text": "Does the quoted lead time include end-to-end transit through final delivery?", "source_ids": ["supplier_3"]},
-            {"owner": "supplier_4", "priority": "blocking", "text": "What is the tooling cost after engineering review?", "source_ids": ["supplier_4"]},
-            {"owner": "supplier_4", "priority": "blocking", "text": "Can you confirm the pricing currency explicitly?", "source_ids": ["supplier_4"]},
-            {"owner": "supplier_4", "priority": "blocking", "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
+            {"owner": "buyer", "priority": "blocking", "fields": ["revision"], "text": "Which drawing revision is required? Nordkant quotes C and Pacific Rim B; neither establishes the buyer requirement.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
+            {"owner": "buyer", "priority": "blocking", "fields": ["destination"], "text": "Where must the parts be delivered so delivered costs can be compared?", "source_ids": ["buyer"]},
+            {"owner": "buyer", "priority": "blocking", "fields": ["release_schedule"], "text": "What release quantities and frequency are planned against the 60,000-unit annual demand?", "source_ids": ["buyer"]},
+            {"owner": "supplier_1", "priority": "important", "fields": ["currency", "revision", "material_finish", "delivery_terms", "release_schedule"], "text": "Please confirm currency, required-revision compliance, finish inclusion, delivered freight and price for the planned release schedule.", "source_ids": ["supplier_1"]},
+            {"owner": "supplier_2", "priority": "important", "fields": ["tooling_terms", "price_adjustment", "deposit_terms", "validity"], "text": "Please explain post-amortization pricing, the index adjustment formula, deposit recovery and quote issue date.", "source_ids": ["supplier_2"]},
+            {"owner": "supplier_3", "priority": "blocking", "fields": ["revision"], "text": "Can you re-quote against the buyer-confirmed current drawing revision?", "source_ids": ["supplier_3", "buyer"]},
+            {"owner": "supplier_3", "priority": "blocking", "fields": ["delivery_terms"], "text": "What freight and duty charges apply to the buyer destination?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_3", "priority": "blocking", "fields": ["lead_time"], "text": "Does the quoted lead time include end-to-end transit through final delivery?", "source_ids": ["supplier_3"]},
+            {"owner": "supplier_4", "priority": "blocking", "fields": ["tooling_amount"], "text": "What is the tooling cost after engineering review?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "blocking", "fields": ["currency"], "text": "Can you confirm the pricing currency explicitly?", "source_ids": ["supplier_4"]},
+            {"owner": "supplier_4", "priority": "blocking", "fields": ["revision"], "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
         ],
     }
 
@@ -583,6 +585,9 @@ class StructuredContractTests(unittest.TestCase):
         follow_up = schema["properties"]["follow_up_questions"]["items"]
         self.assertEqual(follow_up["properties"]["owner"]["enum"], sources)
         self.assertEqual(follow_up["properties"]["priority"]["enum"], ["blocking", "important", "optional"])
+        self.assertIn("fields", follow_up["required"])
+        self.assertTrue({"revision", "destination", "release_schedule"}.issubset(
+            follow_up["properties"]["fields"]["items"]["enum"]))
         recommendations = schema["properties"]["recommendation"]
         self.assertEqual(recommendations["required"], ["supplier_1"])
         self.assertEqual(recommendations["properties"]["supplier_1"]["properties"]["action"]["enum"],
@@ -630,16 +635,34 @@ class BuyerReportQualityTests(unittest.TestCase):
         self.assertIsNone(result["extension_plus_stated_tooling"])
 
     def test_revision_blocker_overrides_a_model_advance_recommendation(self):
+        self.data["buyer"]["revision"] = fact("C", "Required drawing revision C")
         decision = self.analysis["recommendation"][2]
         decision["action"] = "advance"
         decision["text"] = "Advance immediately with no revision checks."
         report = self.report()
         row = next(line for line in report.splitlines() if line.startswith("| Pacific Rim Components |"))
         self.assertIn("Do not advance yet", row)
-        self.assertIn("Rev B conflicts with Rev C", row)
-        self.assertIn("required revision is unknown", row)
+        self.assertIn("Quoted Rev B differs from buyer-required Rev C", row)
         self.assertNotIn("Advance immediately", report)
         self.assertIn("Drawing revision blocker", report)
+
+    def test_supplier_revisions_do_not_establish_the_buyer_requirement(self):
+        for index in (1, 2):
+            self.analysis["recommendation"][index]["action"] = "advance"
+        calculations = calculate_amounts(self.data)
+        self.assertTrue(all(item["revision_blocker"] is None for item in calculations))
+        self.assertIsNone(self.data["buyer"]["revision"]["value"])
+        report = self.report()
+        for supplier in ("Nordkant Prazisionsteile GmbH", "Pacific Rim Components"):
+            row = next(line for line in report.splitlines() if line.startswith(f"| {supplier} |"))
+            self.assertIn("Hold / needs clarification", row)
+            self.assertIn("buyer's required revision is unknown", row)
+            self.assertIn("Nordkant Prazisionsteile GmbH", row)
+            self.assertIn("Rev C", row)
+            self.assertIn("Pacific Rim Components", row)
+            self.assertIn("Rev B", row)
+        self.assertNotIn("Drawing revision blocker", report)
+        self.assertNotIn("buyer-required Rev C", report)
 
     def test_buyer_revision_takes_precedence_over_another_suppliers_revision(self):
         self.data["buyer"]["revision"] = fact("B", "Required drawing revision B")
@@ -658,7 +681,6 @@ class BuyerReportQualityTests(unittest.TestCase):
         report = self.report()
         self.assertIn("Shortlist / advance", report)
         self.assertIn("Hold / needs clarification", report)
-        self.assertIn("Do not advance yet", report)
         pacific = report.split("### Pacific Rim Components\n", 1)[1].split("### Brightwater Precision", 1)[0]
         for expected in ("Resolve first", "re-quote", "drawing revision", "freight and duty", "buyer destination", "end-to-end transit"):
             self.assertIn(expected, pacific)
@@ -704,11 +726,81 @@ class DynamicFollowUpTests(unittest.TestCase):
         self.assertIn("freight and duty excluded", context["supplier_3"]["comparability_gaps"][0])
         self.assertTrue(all("priority_questions" not in item for item in calculations))
 
+    def test_missing_buyer_requirements_are_blockers_owned_by_the_buyer(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        risks = context["buyer"]["detected_risks"]
+        self.assertEqual({risk["field"] for risk in risks}, {"revision", "destination", "release_schedule"})
+        self.assertTrue(all(risk["blocking"] and risk["resolution_owner"] == "buyer" for risk in risks))
+        revision = next(risk for risk in risks if risk["field"] == "revision")
+        self.assertIn("Nordkant Prazisionsteile GmbH references drawing revision C", revision["detail"])
+        self.assertIn("supplier_2", revision["source_ids"])
+        self.assertIn("supplier_3", revision["source_ids"])
+        self.assertIsNone(data["buyer"]["revision"]["value"])
+        self.assertIsNone(data["buyer"]["destination"]["value"])
+
+    def test_supplier_only_or_low_priority_questions_do_not_resolve_buyer_blockers(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        for change in ("remove_buyer", "supplier_owner", "lower_priority", "missing_destination"):
+            analysis = analysis_example()
+            if change == "remove_buyer":
+                analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "buyer"]
+            elif change == "supplier_owner":
+                for q in analysis["follow_up_questions"]:
+                    if q["owner"] == "buyer":
+                        q["owner"] = "supplier_2"
+            elif change == "lower_priority":
+                for q in analysis["follow_up_questions"]:
+                    if q["owner"] == "buyer":
+                        q["priority"] = "important"
+            else:
+                analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if "destination" not in q["fields"]]
+            with self.subTest(change=change), self.assertRaisesRegex(ValidationError, "Missing blocking buyer follow-up questions.*destination"):
+                validate_analysis(analysis, sources, follow_up_context=context)
+
+    def test_known_buyer_requirements_do_not_force_reconfirmation(self):
+        data = extracted_example()
+        data["buyer"].update({
+            "revision": fact("B", "Required Rev B"), "destination": fact("Cleveland", "Ship to Cleveland"),
+            "release_schedule": fact("5,000 monthly", "Release 5,000 monthly"),
+        })
+        context = follow_up_context(data, calculate_amounts(data))
+        self.assertEqual(context["buyer"]["detected_risks"], [])
+        analysis = analysis_example()
+        analysis["follow_up_questions"] = []
+        validate_analysis(analysis, parse_packet(EXAMPLE.read_text()).sources, follow_up_context=context)
+
+    def test_harness_requests_model_authored_buyer_questions_when_omitted(self):
+        incomplete = model_analysis()
+        incomplete["follow_up_questions"] = [q for q in incomplete["follow_up_questions"] if q["owner"] != "buyer"]
+        corrected = copy.deepcopy(incomplete)
+        questions = {
+            "revision": "Nordkant references C and Pacific Rim B; which drawing revision must all offers meet?",
+            "destination": "Where must the bracket be delivered so the FOB, DDP and EXW offers can be compared?",
+            "release_schedule": "How will the 60,000 units be released, including order sizes and frequency?",
+        }
+        corrected["follow_up_questions"] += [
+            {"owner": "buyer", "priority": "blocking", "fields": [field], "text": text, "source_ids": ["buyer"]}
+            for field, text in questions.items()
+        ]
+        client = Mock(complete=Mock(side_effect=[json.dumps(model_extraction()), json.dumps(incomplete), json.dumps(corrected)]))
+        report = ProcurementAgent(client).review(EXAMPLE.read_text())
+        self.assertEqual(client.complete.call_count, 3)
+        correction = client.complete.call_args_list[2].args[0][-1]["content"]
+        for field in questions:
+            self.assertIn(field, correction)
+        buyer_section = report.split("### Buyer\n", 1)[1].split("### Tri-State Metalcraft", 1)[0]
+        self.assertIn("Resolve first", buyer_section)
+        for question in questions.values():
+            self.assertIn(question, buyer_section)
+
     def test_renderer_uses_only_model_questions_and_sorts_priorities(self):
         data = extracted_example()
         analysis = analysis_example()
         analysis["follow_up_questions"] = [
-            {"owner": "supplier_1", "priority": priority, "text": text, "source_ids": ["supplier_1"]}
+            {"owner": "supplier_1", "priority": priority, "fields": ["other_terms"], "text": text, "source_ids": ["supplier_1"]}
             for priority, text in (("optional", "Optional topic?"), ("important", "Important topic?"),
                                    ("blocking", "Blocking topic?"), ("optional", "Blocking topic?"))
         ]
@@ -757,7 +849,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         }
         question = "Who approves the first article, and how long does approval take before the quoted six-week lead time starts?"
         analysis["follow_up_questions"].append({
-            "owner": "supplier_5", "priority": "blocking", "text": question, "source_ids": ["supplier_5"],
+            "owner": "supplier_5", "priority": "blocking", "fields": ["other_terms", "lead_time"], "text": question, "source_ids": ["supplier_5"],
         })
         client = Mock(complete=Mock(side_effect=[json.dumps(wire), json.dumps(analysis)]))
         report = ProcurementAgent(client).review(packet_text)
@@ -789,7 +881,7 @@ def variable_supplier_fixture(count, *, part="BRK-4471-A", quantity=60000, revis
         buyer["description"] = fact("Rubber sealing ring", "L3")
     blocks = [buyer_text]
     suppliers, recommendations, questions = {}, {}, [{
-        "owner": "buyer", "priority": "blocking", "text": "What release schedule is required?" if annual else "When must this order arrive?", "source_ids": ["buyer"],
+        "owner": "buyer", "priority": "blocking", "fields": ["release_schedule" if annual else "required_delivery"], "text": "What release schedule is required?" if annual else "When must this order arrive?", "source_ids": ["buyer"],
     }]
     for index in range(1, count + 1):
         source_id = f"supplier_{index}"
@@ -805,7 +897,7 @@ def variable_supplier_fixture(count, *, part="BRK-4471-A", quantity=60000, revis
         })
         recommendations[source_id] = {"action": "advance", "text": "Clarify commercial terms before selection.", "source_ids": [source_id]}
         question = f"Will you hold {currency} {price} per piece for our planned release quantities?" if annual else "What payment terms apply to this order?"
-        questions.append({"owner": source_id, "priority": "important", "text": question, "source_ids": [source_id]})
+        questions.append({"owner": source_id, "priority": "important", "fields": ["min_release"] if annual else ["payment_terms"], "text": question, "source_ids": [source_id]})
     return "\n===PACKET===\n".join(blocks), {"buyer": buyer, "suppliers": suppliers}, {
         "risks": [{"text": "The buyer release schedule is unspecified." if annual else "Required arrival date is unspecified.", "source_ids": ["buyer"]}],
         "recommendation": recommendations, "follow_up_questions": questions,

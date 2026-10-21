@@ -143,10 +143,14 @@ The tooling scenario adds one separately quoted charge, explicitly as an assumpt
 no tooling total is calculated when amount/currency is unresolved or differs from
 the price currency. Decimal arithmetic avoids intermediate money rounding.
 FOB/EXW prices are nominal; explicit freight/duty exclusions are highlighted rather
-than treated as landed-cost advantages. A conflicting earlier revision is a blocker:
-the supplier cannot advance until the buyer confirms the required drawing and the
-supplier confirms compliance or re-quotes. Another supplier's Rev C alone does not
-establish the buyer's requirement. Detailed validation reasons stay in run state;
+than treated as landed-cost advantages. A mismatch with the buyer-stated drawing
+revision prevents advancement until compliance is confirmed or the supplier re-quotes.
+When the buyer's requirement is unknown, different supplier revisions are unresolved
+comparison gaps for both offers; neither a later-looking revision nor a supplier's
+reference establishes the requirement. Missing buyer revision, destination or release
+schedule generates a blocking buyer issue when needed to assess the quoted terms.
+The model drafts the buyer questions; validation checks that they cover those issues
+as blocking, buyer-owned questions. Detailed validation reasons stay in run state;
 the buyer report groups them into concise data-quality notes and preserves evidence.
 
 ### Architecture and boundaries

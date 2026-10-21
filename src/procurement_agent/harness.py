@@ -89,11 +89,13 @@ class ReviewHarness:
                 {"source_id": warning["source_id"], "field": warning["field"]}
                 for warning in state.extraction["validation_warnings"]
             ]
+        questions_context = follow_up_context(state.extraction, state.calculations)
         state.analysis = self._request(
             state, ANALYSIS_PROMPT,
             {"extraction": analysis_extraction, "calculations": state.calculations,
-             "follow_up_context": follow_up_context(state.extraction, state.calculations)},
-            validate_analysis, max_tokens=min(16000, max(6000, 800 * len(state.packet.suppliers))), stage="Analysis",
+             "follow_up_context": questions_context},
+            lambda data, sources: validate_analysis(data, sources, follow_up_context=questions_context),
+            max_tokens=min(16000, max(6000, 800 * len(state.packet.suppliers))), stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )
         self._progress("Rendering the report...")

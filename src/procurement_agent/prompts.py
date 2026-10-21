@@ -79,7 +79,7 @@ three sections as JSON:
 {
   "risks": [{"text": "...", "source_ids": ["buyer", "supplier_1"]}],
   "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"]}},
-  "follow_up_questions": [{"owner": "supplier_1", "priority": "blocking", "text": "...", "source_ids": ["supplier_1"]}]
+  "follow_up_questions": [{"owner": "buyer", "priority": "blocking", "fields": ["revision"], "text": "...", "source_ids": ["buyer"]}]
 }
 Return exactly one recommendation per supplier, keyed by its source ID. Its action
 must be advance, hold, or do_not_advance. Advance means shortlist for further
@@ -98,14 +98,18 @@ reconstruct discarded claims or recommend based on them. Withheld amounts are
 unknown, not zero. Keep the shortlist conditional when validation is incomplete.
 Describe affected terms in buyer language; do not expose internal field paths,
 schema errors, harness operations, or validation mechanics in report prose.
-Calculation results also include currency_info, revision_blocker, and
+Calculation results also include currency_info, revision_blocker, revision_comparability_gap, and
 cost_comparability_note. Currency status 'inferred' is
 an explicit assumption, never a verified quote term. Retain nominal prices using
 that labelled assumption instead of excluding them. Do not describe inferred USD
 as supplier-confirmed, or treat it as a licence to compare landed costs.
 If revision_blocker is present, use do_not_advance and state that the supplier
-must confirm the current drawing or re-quote before progressing. Conflicting
-quoted revisions do not establish which revision the buyer requires.
+does not match the buyer-stated requirement. If revision_comparability_gap is
+present, supplier offers use different revision bases but the buyer requirement is
+unknown: hold comparison pending buyer clarification. Do not infer the required
+or current revision from alphabetical/numeric ordering or from any supplier.
+Attribute each revision to the supplier who quoted it. Neither a later-looking
+revision nor a delivered quote establishes the buyer's requirement or destination.
 Freight/duty exclusions make a price nominal rather than a landed-cost advantage.
 Generate ALL question text yourself from this case, not supplier names, fixed
 positions, or canned questions. The follow_up_context is an issue inventory:
@@ -121,6 +125,13 @@ important (material commercial clarification), or optional. Cover blocking risks
 first, keep one topic per question where possible, and avoid duplicates. If no
 useful clarification is needed for an owner, omit questions for that owner rather
 than inventing busywork. The renderer displays only your drafted questions.
+Each question must include fields naming the terms it addresses. For every
+blocking risk in follow_up_context.buyer.detected_risks, include a blocking
+buyer-owned question covering that field. Missing required drawing revision,
+destination, and release schedule must be established by the buyer when they
+block comparison. Supplier-only questions do not resolve these buyer decisions.
+Do not omit the buyer section in such cases or claim these inputs are known from
+supplier replies. Write the question text dynamically using this case's facts.
 
 Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
 consequential statement must be supported by the referenced sources. Quoted

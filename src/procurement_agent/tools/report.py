@@ -6,6 +6,8 @@ import tempfile
 from decimal import Decimal, localcontext
 from pathlib import Path
 
+from .calculations import follow_up_context
+
 
 def _escape(value) -> str:
     text = html.escape(" ".join(str(value).split()), quote=False)
@@ -128,6 +130,10 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     for key, excerpt in evidence.items():
         lines.append(f"[^{key}]: {_escape(excerpt)}")
     lines += ["", "## 2. Risks / unknowns", ""]
+    buyer_risks = follow_up_context(extraction, calculations)["buyer"]["detected_risks"]
+    for risk in buyer_risks:
+        label = {"revision": "Required drawing revision", "destination": "Buyer destination", "release_schedule": "Release schedule"}.get(risk["field"], risk["field"].replace("_", " "))
+        lines.append(f"- **Buyer clarification required — {_escape(label)}:** {_escape(risk['detail'])}")
     for result in calculations:
         if result["revision_blocker"]:
             lines.append(f"- **Drawing revision blocker — {_escape(names[result['source_id']])}:** {_escape(result['revision_blocker'])}")
@@ -158,8 +164,9 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         source_id = supplier["source_id"]
         decision = decisions[source_id]
         blocker = amounts[source_id]["revision_blocker"]
-        action = "do_not_advance" if blocker else decision["action"]
-        reason = blocker or decision["text"]
+        revision_gap = amounts[source_id]["revision_comparability_gap"]
+        action = "do_not_advance" if blocker else "hold" if revision_gap and decision["action"] == "advance" else decision["action"]
+        reason = blocker or revision_gap or decision["text"]
         lines.append(f"| {_escape(names[source_id])} | **{action_labels[action]}** | {_escape(reason)} |")
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():

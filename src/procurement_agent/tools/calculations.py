@@ -33,6 +33,13 @@ def _revision_blocker(supplier, extraction):
         if quoted != required:
             return f"Quoted Rev {quoted} differs from buyer-required Rev {required}. Do not advance until confirmed compliant or re-quoted."
         return None
+    return None
+
+
+def _revision_comparability_gap(supplier, extraction):
+    quoted = _revision(supplier["revision"]["value"])
+    if quoted is None or extraction["buyer"]["revision"]["value"] is not None:
+        return None
     for peer in extraction["suppliers"]:
         if peer["source_id"] == supplier["source_id"]:
             continue
@@ -41,14 +48,13 @@ def _revision_blocker(supplier, extraction):
         other = _revision(peer["revision"]["value"])
         if other is None or other == quoted:
             continue
-        comparable = quoted.isdigit() == other.isdigit()
-        later = (int(other) > int(quoted)) if other.isdigit() and quoted.isdigit() else other > quoted
-        if not comparable or later:
-            return (
-                f"Quoted Rev {quoted} conflicts with Rev {other} referenced in another reply. "
-                "The buyer's required revision is unknown. Do not advance until the buyer confirms "
-                "the current revision and the supplier confirms compliance or re-quotes."
-            )
+        name = supplier["supplier"]["value"] or supplier["source_id"]
+        peer_name = peer["supplier"]["value"] or peer["source_id"]
+        return (
+            f"{name} quotes Rev {quoted}; {peer_name} references Rev {other}. "
+            "The buyer's required revision is unknown. Hold the technical comparison pending "
+            "buyer confirmation; neither supplier's quoted revision establishes the requirement."
+        )
     return None
 
 
@@ -69,7 +75,9 @@ def _buyer_notes(supplier, extraction):
         cost_note = "Nominal FOB price; full delivered cost is not established. Confirm freight and duty coverage."
     else:
         cost_note = "Delivery-cost coverage unknown; no confirmed landed-cost comparison."
-    return {"revision_blocker": _revision_blocker(supplier, extraction), "cost_comparability_note": cost_note}
+    return {"revision_blocker": _revision_blocker(supplier, extraction),
+            "revision_comparability_gap": _revision_comparability_gap(supplier, extraction),
+            "cost_comparability_note": cost_note}
 
 
 def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
@@ -84,6 +92,32 @@ def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
             "detected_risks": [],
             "comparability_gaps": [],
         }
+    buyer = extraction["buyer"]
+    suppliers = extraction["suppliers"]
+
+    def buyer_blocker(field, detail, related):
+        context["buyer"]["detected_risks"].append({
+            "field": field, "blocking": True, "resolution_owner": "buyer",
+            "detail": detail, "source_ids": ["buyer", *related],
+        })
+
+    quoted_revisions = [item for item in suppliers if item["revision"]["value"] is not None]
+    if buyer["revision"]["value"] is None and quoted_revisions:
+        references = "; ".join(
+            f"{item['supplier']['value'] or item['source_id']} references drawing revision "
+            f"{_revision(item['revision']['value']) or item['revision']['value']}"
+            for item in quoted_revisions
+        )
+        buyer_blocker("revision", references + ". The buyer's required drawing revision is not provided; confirm it before assessing compliance.",
+                      [item["source_id"] for item in quoted_revisions])
+    delivery_quotes = [item for item in suppliers if item["delivery_terms"]["value"] is not None]
+    if buyer["destination"]["value"] is None and delivery_quotes:
+        buyer_blocker("destination", "Buyer destination is missing. Supplier delivery locations are quote terms, not buyer requirements; delivered-cost comparison needs the actual destination.",
+                      [item["source_id"] for item in delivery_quotes])
+    quantity_conditions = [item for item in suppliers if any(item[field]["value"] is not None for field in ("moq", "min_release", "annual_volume"))]
+    if buyer["release_schedule"]["value"] is None and (buyer["quantity_basis"]["value"] == "annual" or quantity_conditions):
+        buyer_blocker("release_schedule", "Buyer release schedule is missing. Annual demand does not establish order sizes or release frequency; quoted volume and minimum-quantity conditions cannot yet be checked against the purchasing plan.",
+                      [item["source_id"] for item in quantity_conditions])
     for calculation in calculations:
         owner = calculation["source_id"]
         issue = context[owner]
@@ -93,6 +127,8 @@ def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
             issue["uncertain_fields"].append("tooling_currency")
         if calculation["revision_blocker"]:
             issue["detected_risks"].append({"field": "revision", "blocking": True, "detail": calculation["revision_blocker"]})
+        if calculation["revision_comparability_gap"]:
+            issue["detected_risks"].append({"field": "revision", "blocking": True, "resolution_owner": "buyer", "detail": calculation["revision_comparability_gap"]})
         qualification = records[owner]["price_qualification"]["value"]
         if qualification and re.search(r"around|approx|indicative|estimat|subject to|pending|confirm|provisional", qualification, re.IGNORECASE):
             issue["uncertain_fields"].append("price_qualification")

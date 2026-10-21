@@ -7,7 +7,7 @@ name = "procurement-agent"
 version = "0.1.0"
 description = "Procurement quote review agent using OpenRouter"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = ["python-dotenv>=1.0,<2"]
 
 [project.scripts]
 procurement-agent = "procurement_agent.cli:main"

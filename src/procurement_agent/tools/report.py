@@ -146,7 +146,8 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
             lines.append(f"- {_escape(item['text'])} (Sources: {refs})")
 
     assessment(analysis["risks"])
-    if validation_warnings:
+    follow_up_warnings = analysis.get("follow_up_warnings", [])
+    if validation_warnings or follow_up_warnings:
         lines += ["", "### Data-quality notes", ""]
         for source_id, name in names.items():
             fields = sorted({labels.get(warning["field"], warning["field"].replace("_", " "))
@@ -155,6 +156,11 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                 lines.append(f"- **{_escape(name)}:** Confirm {_escape(', '.join(fields))}. "
                              "These terms could not be verified from the reply; related totals may be unavailable. "
                              "This does not establish that the supplier omitted them.")
+        for warning in follow_up_warnings:
+            fields = ", ".join(labels.get(field, field.replace("_", " ")) for field in warning["fields"])
+            lines.append(f"- **{_escape(names[warning['source_id']])}:** Review follow-up coverage for {_escape(fields)}. "
+                         "Drafted questions may need additions; these terms still need confirmation. "
+                         "Any shortlisting remains conditional.")
     lines += ["", "## 3. Shortlist / recommendation", "",
               "Advance means pursue clarification or a firm offer, not approve a purchase. "
               "Shared buyer unknowns can prevent a final comparison while allowing conditional shortlisting. "

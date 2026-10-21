@@ -130,8 +130,10 @@ The renderer displays those questions, removes exact duplicates, and groups them
 by priority. Owners without useful questions need not receive generic busywork.
 Buyer questions establish shared requirements; supplier questions resolve that
 offer's own terms. Validation requires actionable supplier questions for hold/stop
-decisions and relevant questions for uncertain terms on conditionally advanced
-offers. A stop decision needs a blocking question referencing that supplier's quote.
+decisions. Incomplete question coverage for uncertain terms on conditionally
+advanced offers produces data-quality notes, rather than stopping the report or
+spending a correction call. The terms remain unresolved; questions are not invented
+by the application. A stop decision needs a blocking question referencing that supplier's quote.
 Supplier IDs and schemas come from the input blocks; adding suppliers requires no
 code changes. Detailed terms are displayed in groups of at most four columns for
 readability; the shortlist still includes every supplier in one comparison.

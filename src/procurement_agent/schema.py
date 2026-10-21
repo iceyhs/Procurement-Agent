@@ -310,6 +310,7 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
         if required - covered:
             _fail("Missing blocking buyer follow-up questions for: " + ", ".join(sorted(required - covered)) + ". Ask the buyer, not a supplier, to establish these requirements.")
         missing_supplier_questions = []
+        follow_up_warnings = []
         for decision in data["recommendation"]:
             owner = decision["supplier_id"]
             issue = follow_up_context.get(owner, {})
@@ -323,7 +324,11 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
             elif decision["action"] == "hold" and not questions:
                 missing_supplier_questions.append(f"{owner}: hold requires an actionable supplier-owned clarification question")
             elif decision["action"] == "advance" and uncertain and not any(set(q["fields"]) & uncertain for q in questions):
-                missing_supplier_questions.append(f"{owner}: include an important supplier-owned question about uncertain or unverified terms ({', '.join(sorted(uncertain))})")
+                # Coverage tags cannot establish whether prose resolves a term.
+                # Non-blocking clarification gaps must not discard a usable report.
+                follow_up_warnings.append({"source_id": owner, "fields": sorted(uncertain)})
         if missing_supplier_questions:
             _fail("Missing supplier follow-ups: " + "; ".join(missing_supplier_questions[:12]))
+        if follow_up_warnings:
+            data["follow_up_warnings"] = follow_up_warnings
     return data

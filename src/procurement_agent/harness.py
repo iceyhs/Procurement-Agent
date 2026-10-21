@@ -98,5 +98,8 @@ class ReviewHarness:
             max_tokens=min(16000, max(6000, 800 * len(state.packet.suppliers))), stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )
+        if state.analysis.get("follow_up_warnings"):
+            count = len(state.analysis["follow_up_warnings"])
+            self._progress(f"Analysis: {count} supplier follow-up coverage notes; see data-quality notes.")
         self._progress("Rendering the report...")
         return render_report(state.extraction, state.calculations, state.analysis)

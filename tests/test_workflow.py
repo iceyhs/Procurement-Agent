@@ -457,6 +457,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(payload["calculations"][2]["quantity_price_extension"], "194400")
         self.assertIn("Unknown / not stated", report)
 
+    def test_nonblocking_follow_up_gaps_survive_an_exhausted_correction_budget(self):
+        partial = model_extraction()
+        partial["suppliers"]["supplier_2"]["annual_volume"]["evidence"] = "L999"
+        analysis = model_analysis()
+        for question in analysis["follow_up_questions"]:
+            if question["owner"] == "supplier_1":
+                # The wording asks about currency, but the tag covers another term.
+                question["fields"] = ["delivery_terms"]
+            elif question["owner"] == "supplier_2":
+                question["fields"] = ["price_adjustment"]
+        client = self.client("{}", json.dumps(partial), json.dumps(analysis))
+        events = []
+        report = ProcurementAgent(client, on_progress=events.append).review(self.packet)
+        self.assertEqual(client.complete.call_count, 3)
+        self.assertIn("Analysis: 2 supplier follow-up coverage notes; see data-quality notes.", events)
+        self.assertIn("Data-quality notes", report)
+        self.assertIn("Review follow-up coverage for Price currency, Tooling currency", report)
+        self.assertIn("Review follow-up coverage for Selected annual volume tier", report)
+        for supplier in ("Tri-State Metalcraft", "Nordkant Prazisionsteile GmbH"):
+            self.assertIn(f"| {supplier} | **Shortlist / advance with clarification**", report)
+        payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
+        self.assertIsNone(payload["extraction"]["suppliers"][1]["annual_volume"]["value"])
+        self.assertIsNone(payload["calculations"][1]["quantity_price_extension"])
+        self.assertEqual(payload["calculations"][1]["normalized_unit_price"], "3.92")
+        self.assertIn("USD 4.85 (inferred currency)", report)
+        self.assertNotIn("L999", report)
+        for question in analysis["follow_up_questions"]:
+            self.assertIn(question["text"], report)
+
     def test_shared_correction_budget(self):
         for responses in (
             ("{}", "{}"),
@@ -821,10 +850,38 @@ class DynamicFollowUpTests(unittest.TestCase):
         data = extracted_example()
         context = follow_up_context(data, calculate_amounts(data))
         sources = parse_packet(EXAMPLE.read_text()).sources
-        for owner in ("supplier_1", "supplier_3", "supplier_4"):
+        for owner in ("supplier_3", "supplier_4"):
             analysis = analysis_example()
             analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != owner]
             with self.subTest(owner=owner), self.assertRaisesRegex(ValidationError, f"Missing supplier follow-ups: {owner}"):
+                validate_analysis(analysis, sources, follow_up_context=context)
+
+    def test_advance_follow_up_gaps_are_advisory_without_an_extra_call(self):
+        analysis = model_analysis()
+        analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "supplier_1"]
+        client = Mock(complete=Mock(side_effect=[json.dumps(model_extraction()), json.dumps(analysis)]))
+        report = ProcurementAgent(client).review(EXAMPLE.read_text())
+        self.assertEqual(client.complete.call_count, 2)
+        self.assertIn("Data-quality notes", report)
+        self.assertIn("Review follow-up coverage for Price currency, Tooling currency", report)
+        self.assertIn("| Tri-State Metalcraft | **Shortlist / advance with clarification**", report)
+        section = report.split("### Tri-State Metalcraft\n", 1)[1].split("### ", 1)[0]
+        self.assertIn("No follow-up questions drafted for this party.", section)
+
+    def test_advisory_notes_do_not_allow_malformed_or_ungrounded_analysis(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        for change in ("source", "shape", "injected_warning"):
+            analysis = analysis_example()
+            analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "supplier_1"]
+            if change == "source":
+                analysis["risks"][0]["source_ids"] = ["unknown"]
+            elif change == "shape":
+                del analysis["follow_up_questions"][0]["fields"]
+            else:
+                analysis["follow_up_warnings"] = []
+            with self.subTest(change=change), self.assertRaises(ValidationError):
                 validate_analysis(analysis, sources, follow_up_context=context)
 
     def test_do_not_advance_needs_a_blocking_question_grounded_in_that_quote(self):

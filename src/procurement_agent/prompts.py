@@ -75,10 +75,14 @@ Use the validated extraction, exact evidence, and harness calculations to prepar
 three sections as JSON:
 {
   "risks": [{"text": "...", "source_ids": ["buyer", "supplier_1"]}],
-  "recommendation": [{"text": "...", "source_ids": ["supplier_1"]}],
+  "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"]}},
   "follow_up_questions": [{"owner": "supplier_1", "text": "...", "source_ids": ["supplier_1"]}]
 }
-Each list must have 1 to 40 items. Use only provided source IDs. Include targeted
+Return exactly one recommendation per supplier, keyed by its source ID. Its action
+must be advance, hold, or do_not_advance. Advance means shortlist for further
+commercial/technical clarification, not approval to purchase. Explain the next
+step and conditions in text. Do not substitute a general supplier summary for a
+clear action. Other lists must have 1 to 40 items. Use only provided source IDs. Include targeted
 questions for the buyer and EVERY supplier. Order risks and questions by decision
 impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
 Markdown headings, HTML, tables, or an alternative report.
@@ -87,6 +91,21 @@ were excluded because their evidence was invalid. Treat them as unresolved,
 mention material exclusions, ask targeted verification questions, and do not
 reconstruct discarded claims or recommend based on them. Withheld amounts are
 unknown, not zero. Keep the shortlist conditional when validation is incomplete.
+Describe affected terms in buyer language; do not expose internal field paths,
+schema errors, harness operations, or validation mechanics in report prose.
+Calculation results also include currency_info, revision_blocker,
+cost_comparability_note, and priority_questions. Currency status 'inferred' is
+an explicit assumption, never a verified quote term. Retain nominal prices using
+that labelled assumption instead of excluding them. Do not describe inferred USD
+as supplier-confirmed, or treat it as a licence to compare landed costs.
+If revision_blocker is present, use do_not_advance and state that the supplier
+must confirm the current drawing or re-quote before progressing. Rev B versus
+another quote's Rev C is a major blocker; it does not prove the buyer requires C.
+Freight/duty exclusions make a price nominal rather than a landed-cost advantage.
+Prioritize drawing, landed-cost coverage, and complete delivered lead-time
+questions. For uncertain tooling, currency, or revision, request explicit
+confirmation. The renderer already includes the supplied priority_questions;
+provide additional targeted questions without repeating them where possible.
 
 Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
 consequential statement must be supported by the referenced sources. Quoted
@@ -95,7 +114,7 @@ calculation results. Do not perform additional arithmetic or FX conversions.
 Describe lead-time components separately rather than inventing full delivery
 durations. Quote price extensions are NOT landed cost. MOQ is not
 an annual volume requirement; annual demand is not an order/release schedule.
-Keep currencies separate, including ambiguous '$'. Do not automatically apply
+Keep explicit and inferred currencies distinct. Do not automatically apply
 early-payment discounts, index adjustments, or amortization savings.
 
 Evaluate technical fit, cost coverage, delivery, and commercial risk without

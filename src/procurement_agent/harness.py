@@ -83,9 +83,15 @@ class ReviewHarness:
         )
         self._progress("Calculating normalized prices and conditional amounts...")
         state.calculations = calculate_amounts(state.extraction)
+        analysis_extraction = dict(state.extraction)
+        if "validation_warnings" in analysis_extraction:
+            analysis_extraction["validation_warnings"] = [
+                {"source_id": warning["source_id"], "field": warning["field"]}
+                for warning in state.extraction["validation_warnings"]
+            ]
         state.analysis = self._request(
             state, ANALYSIS_PROMPT,
-            {"extraction": state.extraction, "calculations": state.calculations},
+            {"extraction": analysis_extraction, "calculations": state.calculations},
             validate_analysis, max_tokens=6000, stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )

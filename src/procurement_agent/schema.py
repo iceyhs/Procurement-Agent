@@ -65,7 +65,11 @@ def analysis_format(source_ids: list[str]) -> dict:
     }
     return _structured_format("procurement_analysis", _object_schema({
         "risks": {"type": "array", "items": _object_schema(item)},
-        "recommendation": {"type": "array", "items": _object_schema(item)},
+        "recommendation": _object_schema({
+            source_id: _object_schema({
+                **item, "action": {"type": "string", "enum": ["advance", "hold", "do_not_advance"]},
+            }) for source_id in source_ids if source_id != "buyer"
+        }),
         "follow_up_questions": {
             "type": "array", "items": _object_schema({
                 **item, "owner": {"type": "string", "enum": source_ids},
@@ -185,6 +189,13 @@ def _fact(value, field, source, location):
             _fail(f"{location}: expected a three-letter currency or ambiguous '$'.")
         markers = {"USD": ("USD", "US$"), "EUR": ("EUR", "€"), "GBP": ("GBP", "£")}
         if not any(marker in evidence for marker in markers.get(data, (data,))):
+            # Preserve the quoted symbol when the model inferred USD. The
+            # calculation layer records any contextual inference separately.
+            if data == "USD" and "$" in evidence and not re.search(
+                r"\b(?:CAD|AUD|NZD|SGD|HKD|TWD|MXN|ARS|CLP|COP|UYU)\b", evidence
+            ):
+                value["value"] = "$"
+                return
             _fail(f"{location}: currency must be explicit; bare '$' does not establish USD.")
 
 
@@ -233,16 +244,8 @@ def validate_extraction(data: dict, sources: dict[str, str], *, allow_partial=Fa
         if not isinstance(source_id, str) or source_id not in expected_ids or source_id in seen:
             _fail("Supplier source IDs must be known and unique.")
         seen.add(source_id)
-        valid = [check_fact(item[field], field, sources[source_id], f"{source_id}.{field}")
-                 for field in SUPPLIER_FIELDS]
-        if all(valid) or allow_partial:
-            known = [item[field]["value"] is not None for field in ("quoted_price", "price_basis_quantity", "currency")]
-            if any(known) and not all(known):
-                errors.append(f"{source_id}: price, price basis, and currency must be known together or all null.")
-                if allow_partial:
-                    for field in ("quoted_price", "price_basis_quantity", "currency"):
-                        item[field] = {"value": None, "evidence": None}
-                    warnings.append({"source_id": source_id, "field": "price", "reason": "Price calculation inputs are incomplete or unverified; all price calculations withheld."})
+        for field in SUPPLIER_FIELDS:
+            check_fact(item[field], field, sources[source_id], f"{source_id}.{field}")
     if errors and not allow_partial:
         _fail("Extraction validation failed: " + "; ".join(errors[:12]))
     data["suppliers"].sort(key=lambda item: int(item["source_id"].split("_")[1]))
@@ -252,13 +255,27 @@ def validate_extraction(data: dict, sources: dict[str, str], *, allow_partial=Fa
 
 
 def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
+    data = copy.deepcopy(data)
     _keys(data, ("risks", "recommendation", "follow_up_questions"), "analysis")
+    supplier_ids = [source_id for source_id in sources if source_id != "buyer"]
+    if isinstance(data["recommendation"], dict):
+        _keys(data["recommendation"], supplier_ids, "recommendation")
+        records = []
+        for supplier_id in supplier_ids:
+            record = data["recommendation"][supplier_id]
+            _keys(record, ("text", "source_ids", "action"), "recommendation")
+            records.append({"supplier_id": supplier_id, **record})
+        data["recommendation"] = records
     for section in ("risks", "recommendation", "follow_up_questions"):
         items = data[section]
         if not isinstance(items, list) or not 1 <= len(items) <= 40:
             _fail(f"{section}: expected 1 to 40 items.")
         for item in items:
-            fields = ("text", "source_ids", "owner") if section == "follow_up_questions" else ("text", "source_ids")
+            fields = {
+                "risks": ("text", "source_ids"),
+                "recommendation": ("text", "source_ids", "supplier_id", "action"),
+                "follow_up_questions": ("text", "source_ids", "owner"),
+            }[section]
             _keys(item, fields, section)
             if not isinstance(item["text"], str) or not item["text"].strip() or len(item["text"]) > 2000:
                 _fail(f"{section}: text must be a nonempty, bounded string.")
@@ -270,6 +287,14 @@ def validate_analysis(data: dict, sources: dict[str, str]) -> dict:
             if section == "follow_up_questions":
                 if not isinstance(item["owner"], str) or item["owner"] not in sources:
                     _fail("Follow-up owner must be buyer or a supplier source ID.")
+            if section == "recommendation":
+                if not isinstance(item["supplier_id"], str) or item["supplier_id"] not in supplier_ids:
+                    _fail("Recommendation must identify a supplier from this packet.")
+                if item["action"] not in ("advance", "hold", "do_not_advance"):
+                    _fail("Recommendation action must be advance, hold, or do_not_advance.")
+    recommendations = [item["supplier_id"] for item in data["recommendation"]]
+    if len(recommendations) != len(supplier_ids) or set(recommendations) != set(supplier_ids):
+        _fail("Include exactly one recommendation action for every supplier.")
     owners = {item["owner"] for item in data["follow_up_questions"]}
     if owners != set(sources):
         _fail("Include follow-up questions for the buyer and every supplier.")

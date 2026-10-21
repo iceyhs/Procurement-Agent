@@ -138,7 +138,10 @@ def analysis_example():
             {"text": "Approximate pricing, unconfirmed tooling and steady-state lead time prevent a firm comparison.", "source_ids": ["supplier_4"]},
         ],
         "recommendation": [
-            {"text": "Conditionally pursue Tri-State for its quoted release lead time and Nordkant for its stated delivery coverage; confirm technical fit and buyer priorities. Partial totals do not establish a cheapest landed supplier.", "source_ids": ["buyer", "supplier_1", "supplier_2"]},
+            {"supplier_id": "supplier_1", "action": "advance", "text": "Pursue a firm delivered offer; confirm revision and planned releases.", "source_ids": ["buyer", "supplier_1"]},
+            {"supplier_id": "supplier_2", "action": "advance", "text": "Pursue for stated DDP coverage; clarify index adjustments and tooling amortization.", "source_ids": ["supplier_2"]},
+            {"supplier_id": "supplier_3", "action": "do_not_advance", "text": "Confirm the current drawing revision or re-quote before progressing; freight and duty remain excluded.", "source_ids": ["buyer", "supplier_2", "supplier_3"]},
+            {"supplier_id": "supplier_4", "action": "hold", "text": "Obtain firm pricing and tooling, and confirm currency and drawing revision.", "source_ids": ["supplier_4"]},
         ],
         "follow_up_questions": [
             {"owner": "buyer", "text": "What revision, finish, destination, release schedule and delivery date are required, and how should cost versus responsiveness be prioritized?", "source_ids": ["buyer"]},
@@ -148,6 +151,15 @@ def analysis_example():
             {"owner": "supplier_4", "text": "Please provide firm pricing and currency, tooling, payment terms, startup timing and safety-stock replenishment and ownership terms.", "source_ids": ["supplier_4"]},
         ],
     }
+
+
+def model_analysis():
+    data = analysis_example()
+    data["recommendation"] = {
+        item["supplier_id"]: {key: value for key, value in item.items() if key != "supplier_id"}
+        for item in data["recommendation"]
+    }
+    return data
 
 
 class PacketTests(unittest.TestCase):
@@ -213,12 +225,13 @@ class ExtractionTests(unittest.TestCase):
         wire["suppliers"]["supplier_3"]["quoted_price"]["value"] = "99999"
         result = validate_extraction(wire, self.sources, allow_partial=True)
         supplier = result["suppliers"][2]
-        for field in ("quoted_price", "price_basis_quantity", "currency"):
-            self.assertIsNone(supplier[field]["value"])
+        self.assertIsNone(supplier["quoted_price"]["value"])
+        self.assertEqual(supplier["price_basis_quantity"]["value"], "1000")
+        self.assertEqual(supplier["currency"]["value"], "USD")
         calculation = calculate_amounts(result)[2]
         self.assertIsNone(calculation["normalized_unit_price"])
         self.assertIsNone(calculation["quantity_price_extension"])
-        self.assertTrue(any(item["field"] == "price" for item in result["validation_warnings"]))
+        self.assertTrue(any(item["field"] == "quoted_price" for item in result["validation_warnings"]))
 
     def test_minimum_release_is_not_accepted_as_an_moq(self):
         wire = model_extraction()
@@ -277,10 +290,13 @@ class ExtractionTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "numeric value"):
             validate_extraction(self.data, self.sources)
 
-    def test_reject_inferred_dollar_currency(self):
+    def test_model_inferred_usd_is_preserved_as_a_symbol_then_labelled_inferred(self):
         self.data["suppliers"][0]["currency"]["value"] = "USD"
-        with self.assertRaisesRegex(ValidationError, "currency must be explicit"):
-            validate_extraction(self.data, self.sources)
+        data = validate_extraction(self.data, self.sources)
+        self.assertEqual(data["suppliers"][0]["currency"]["value"], "$")
+        info = calculate_amounts(data)[0]["currency_info"]
+        self.assertEqual(info["code"], "USD")
+        self.assertEqual(info["status"], "inferred")
 
     def test_reject_duplicate_suppliers_and_invalid_fact_shapes(self):
         broken = copy.deepcopy(self.data)
@@ -356,7 +372,7 @@ class WorkflowTests(unittest.TestCase):
         return Mock(model="test/model", timeout=60, complete=Mock(side_effect=list(responses)))
 
     def test_full_two_call_workflow_and_four_sections(self):
-        client = self.client(json.dumps(model_extraction()), json.dumps(self.analysis))
+        client = self.client(json.dumps(model_extraction()), json.dumps(model_analysis()))
         report = ProcurementAgent(client).review(self.packet)
         self.assertEqual(client.complete.call_count, 2)
         self.assertEqual([line for line in report.splitlines() if line.startswith("## ")], [
@@ -419,13 +435,16 @@ class WorkflowTests(unittest.TestCase):
         progress = []
         report = ProcurementAgent(client, on_progress=progress.append).review(self.packet)
         self.assertEqual(client.complete.call_count, 3)
-        self.assertIn("Incomplete evidence validation", report)
+        self.assertIn("Data quality", report)
         self.assertIn("Unverified / excluded", report)
-        self.assertIn("Excluded", report)
+        self.assertIn("Data-quality notes", report)
+        self.assertNotIn("Harness checks", report)
+        self.assertNotIn("evidence line range is outside", report)
         self.assertNotIn("UNSUPPORTED_TEST_CLAIM", report)
         self.assertTrue(any("Extraction incomplete" in event for event in progress))
         payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
         warnings = payload["extraction"]["validation_warnings"]
+        self.assertTrue(all("reason" not in item for item in warnings))
         self.assertEqual({item["field"] for item in warnings}, {"price_qualification", "annual_volume", "moq", "other_terms"})
         self.assertIsNone(payload["extraction"]["suppliers"][0]["moq"]["value"])
         self.assertIsNone(payload["calculations"][0]["quantity_price_extension"])
@@ -506,7 +525,7 @@ class WorkflowTests(unittest.TestCase):
             response.__exit__ = Mock(return_value=False)
             return response
 
-        send.side_effect = [response_for(model_extraction()), response_for(self.analysis)]
+        send.side_effect = [response_for(model_extraction()), response_for(model_analysis())]
         with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
             output = Path(directory) / "report.md"
             self.assertEqual(main(["review", str(EXAMPLE), "--output", str(output)]), 0)
@@ -552,12 +571,116 @@ class StructuredContractTests(unittest.TestCase):
         sources = ["buyer", "supplier_1"]
         schema = analysis_format(sources)["json_schema"]["schema"]
         self.assertEqual(set(schema["required"]), {"risks", "recommendation", "follow_up_questions"})
-        for section in schema["properties"].values():
+        for key in ("risks", "follow_up_questions"):
+            section = schema["properties"][key]
             item = section["items"]
             self.assertFalse(item["additionalProperties"])
             self.assertEqual(item["properties"]["source_ids"]["items"]["enum"], sources)
         follow_up = schema["properties"]["follow_up_questions"]["items"]
         self.assertEqual(follow_up["properties"]["owner"]["enum"], sources)
+        recommendations = schema["properties"]["recommendation"]
+        self.assertEqual(recommendations["required"], ["supplier_1"])
+        self.assertEqual(recommendations["properties"]["supplier_1"]["properties"]["action"]["enum"],
+                         ["advance", "hold", "do_not_advance"])
+
+
+class BuyerReportQualityTests(unittest.TestCase):
+    def setUp(self):
+        self.data = extracted_example()
+        self.analysis = analysis_example()
+
+    def report(self):
+        return render_report(self.data, calculate_amounts(self.data), self.analysis)
+
+    def test_currency_provenance_keeps_dollar_prices_visible(self):
+        calculations = calculate_amounts(self.data)
+        self.assertEqual([(item["currency_info"]["code"], item["currency_info"]["status"]) for item in calculations],
+                         [("USD", "inferred"), ("EUR", "explicit"), ("USD", "explicit"), ("USD", "inferred")])
+        report = self.report()
+        self.assertIn("USD 4.85 (inferred currency)", report)
+        self.assertIn("USD 4.40 (inferred currency)", report)
+        self.assertIn("USD (inferred; quoted $)", report)
+        self.assertIn("EUR (explicit)", report)
+        self.assertIn("supplier confirmation required", report)
+        self.assertEqual(self.data["suppliers"][0]["currency"]["value"], "$")
+
+    def test_no_context_or_conflicting_dollar_context_does_not_infer_usd(self):
+        self.data["suppliers"][2]["currency"] = fact()
+        result = calculate_amounts(self.data)[0]
+        self.assertEqual(result["currency_info"]["status"], "unresolved")
+        self.assertEqual(result["normalized_unit_price"], "4.85")
+        self.data = extracted_example()
+        self.data["suppliers"][1]["currency"] = fact("CAD", "CAD 3.92 / pc")
+        result = calculate_amounts(self.data)[0]
+        self.assertEqual(result["currency_info"]["code"], "$")
+        self.assertEqual(result["currency_info"]["status"], "unresolved")
+
+    def test_missing_currency_does_not_discard_a_grounded_price(self):
+        wire = model_extraction()
+        wire["suppliers"]["supplier_1"]["currency"] = fact()
+        data = validate_extraction(wire, parse_packet(EXAMPLE.read_text()).sources)
+        result = calculate_amounts(data)[0]
+        self.assertEqual(result["normalized_unit_price"], "4.85")
+        self.assertEqual(result["currency_info"]["status"], "unknown")
+        self.assertIsNone(result["extension_plus_stated_tooling"])
+
+    def test_revision_blocker_overrides_a_model_advance_recommendation(self):
+        decision = self.analysis["recommendation"][2]
+        decision["action"] = "advance"
+        decision["text"] = "Advance immediately with no revision checks."
+        report = self.report()
+        row = next(line for line in report.splitlines() if line.startswith("| Pacific Rim Components |"))
+        self.assertIn("Do not advance yet", row)
+        self.assertIn("Rev B conflicts with Rev C", row)
+        self.assertIn("required revision is unknown", row)
+        self.assertNotIn("Advance immediately", report)
+        self.assertIn("Drawing revision blocker", report)
+
+    def test_buyer_revision_takes_precedence_over_another_suppliers_revision(self):
+        self.data["buyer"]["revision"] = fact("B", "Required drawing revision B")
+        calculations = calculate_amounts(self.data)
+        self.assertIsNone(calculations[2]["revision_blocker"])
+        self.assertIn("buyer-required Rev B", calculations[1]["revision_blocker"])
+
+    def test_nominal_pacific_rim_price_has_no_landed_cost_advantage_claim(self):
+        result = calculate_amounts(self.data)[2]
+        self.assertEqual(result["normalized_unit_price"], "3.24")
+        self.assertIn("freight and duty excluded", result["cost_comparability_note"])
+        self.assertIn("No confirmed landed-cost advantage", result["cost_comparability_note"])
+        self.assertIn("Nominal unit price / piece (not landed cost)", self.report())
+
+    def test_shortlist_and_blocking_questions_are_explicit(self):
+        report = self.report()
+        self.assertIn("Shortlist / advance", report)
+        self.assertIn("Hold / needs clarification", report)
+        self.assertIn("Do not advance yet", report)
+        pacific = report.split("### Pacific Rim Components\n", 1)[1].split("### Brightwater Precision", 1)[0]
+        for expected in ("Resolve first", "re-quote", "drawing revision", "freight and duty", "buyer destination", "end-to-end transit"):
+            self.assertIn(expected, pacific)
+        brightwater = report.split("### Brightwater Precision\n", 1)[1]
+        for expected in ("tooling cost", "pricing currency", "drawing revision"):
+            self.assertIn(expected, brightwater)
+
+    def test_validation_details_become_concise_buyer_notes(self):
+        self.data["validation_warnings"] = [{
+            "source_id": "supplier_1", "field": "moq",
+            "reason": "supplier_1.moq: numeric value must appear in its evidence.",
+        }]
+        report = self.report()
+        self.assertIn("Data-quality notes", report)
+        self.assertIn("Tri-State Metalcraft", report)
+        self.assertIn("Confirm MOQ", report)
+        self.assertIn("Source evidence", report)
+        self.assertNotIn("Harness checks", report)
+        self.assertNotIn("Model assessment", report)
+        self.assertNotIn("supplier_1.moq:", report)
+        self.assertNotIn("numeric value must appear", report)
+
+    def test_each_supplier_needs_one_valid_action(self):
+        sources = parse_packet(EXAMPLE.read_text()).sources
+        self.analysis["recommendation"].pop()
+        with self.assertRaisesRegex(ValidationError, "every supplier"):
+            validate_analysis(self.analysis, sources)
 
 
 class ReportWriteTests(unittest.TestCase):

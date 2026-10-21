@@ -104,16 +104,29 @@ bytes and eight supplier replies per run.
 1. **Normalized supplier comparison** — buyer requirements, quote terms, price
    normalization, conditional quantity extensions, and exact source excerpts.
 2. **Risks / unknowns** — harness warnings and model assessment.
-3. **Shortlist / recommendation** — conditional next steps, not an award decision.
-4. **Follow-up questions** — drafts grouped by buyer and supplier, ordered by impact.
+3. **Shortlist / recommendation** — explicit advance, hold, or do-not-advance action
+   per supplier; advancement means further clarification, not an award decision.
+4. **Follow-up questions** — blocking revision, delivery-cost, tooling, and currency
+   questions first, followed by additional clarification, grouped by owner.
 
 Unit-price extensions are not landed costs or confirmed ordering plans. Currencies
-remain separate; bare `$` is not automatically USD. Unknown charges remain unknown.
+remain separate. Bare `$` is retained as quoted. When this RFQ also contains an
+explicit USD quote and no conflicting dollar currency, the comparison provisionally
+uses USD labelled **inferred**, with the context and supplier confirmation required.
+Explicit codes remain labelled **explicit**. Without that context, the dollar code
+remains unresolved; a missing currency does not erase a grounded nominal price.
+Unknown charges remain unknown.
 Refundable container deposits are shown separately from permanent cost. Payment
 discounts, index changes, and amortization savings are not automatically applied.
 The tooling scenario adds one separately quoted charge, explicitly as an assumption;
 no tooling total is calculated when amount/currency is unresolved or differs from
 the price currency. Decimal arithmetic avoids intermediate money rounding.
+FOB/EXW prices are nominal; explicit freight/duty exclusions are highlighted rather
+than treated as landed-cost advantages. A conflicting earlier revision is a blocker:
+the supplier cannot advance until the buyer confirms the required drawing and the
+supplier confirms compliance or re-quotes. Another supplier's Rev C alone does not
+establish the buyer's requirement. Detailed validation reasons stay in run state;
+the buyer report groups them into concise data-quality notes and preserves evidence.
 
 ### Architecture and boundaries
 
@@ -153,7 +166,8 @@ checks evidence, numeric support, and conditions after structured generation.
 
 After the one allowed correction, remaining invalid facts are excluded and shown
 as **Unverified / excluded**, distinct from terms that were not stated. The report
-has an incomplete-validation notice and a warning for each discarded field. The
+has a concise data-quality notice and groups affected terms by supplier. Detailed
+validation reasons remain internal. The
 analysis receives only retained facts and warnings, never the discarded claims.
 Invalid price inputs prevent price calculations; unverified price/quantity
 conditions prevent extensions; unverified tooling prevents the tooling scenario.

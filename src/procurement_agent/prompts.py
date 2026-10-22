@@ -75,12 +75,50 @@ Do not assume the RFQ concerns any particular material, process or type of part.
 
 ANALYSIS_PROMPT = BOUNDARY + """
 Use the validated extraction, exact evidence, and harness calculations to prepare
-three sections as JSON:
+an issue-led analysis as JSON:
 {
+  "issues": [{"id": "supplier_1_approval", "owner": "supplier_1", "category": "delivery", "severity": "HIGH", "basis": "ambiguous", "reason": "...", "fields": ["lead_time"], "evidence_fields": ["lead_time", "other_terms"]}],
   "risks": [{"text": "...", "source_ids": ["buyer", "supplier_1"]}],
-  "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"]}},
-  "follow_up_questions": [{"owner": "buyer", "priority": "blocking", "fields": ["revision"], "text": "...", "source_ids": ["buyer"]}]
+  "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"], "clarification_issue_ids": ["supplier_1_approval"]}},
+  "follow_up_questions": [{"owner": "supplier_1", "priority": "important", "fields": ["lead_time"], "issue_ids": ["supplier_1_approval"], "text": "...", "source_ids": ["supplier_1"]}]
 }
+First assess the unresolved issues, then draft recommendations and questions from
+those issues. follow_up_context[owner].issues contains evidence-backed candidates
+with IDs, categories, severity floors, reasons and supporting field references.
+Reuse candidate IDs; you need not repeat candidates in your issues output. Add
+only novel unresolved issues or justified severity increases. Do not downgrade
+deterministic priorities. Categories: technical, cost, delivery, quantity, payment,
+validity, other. Severities in order: BLOCKER, HIGH, MEDIUM, LOW. BLOCKER prevents
+the stated next decision; HIGH materially affects evaluation; MEDIUM can be
+clarified in parallel; LOW is optional. A shared buyer BLOCKER to final comparison
+does not automatically prevent supplier shortlisting.
+Each novel issue needs basis (missing, unverified, ambiguous, or conflict),
+a specific reason explaining what is UNRESOLVED and
+evidence_fields referencing the owner's validated fields. Those references are
+resolved to original evidence by the harness. Unknown/unverified fields support
+only uncertainty, never a claim that the supplier omitted a term or that a discarded
+value is true. Do not invent an issue or a deadline. Do not re-ask a known MOQ,
+included tooling, explicit currency, or other sufficiently answered term. For
+amortization, ask about unresolved post-amortization pricing, not whether tooling
+is included if the quote already says it is. Qualitative ambiguity and novel
+commercial/technical conditions require your judgment and grounded explanation.
+If a heuristic ambiguous candidate is already sufficiently answered elsewhere in
+the validated terms, return that candidate with basis 'answered', explain why,
+and cite evidence_fields containing the answer. It will be removed from unresolved
+issues. Do not use this to dismiss a confirmed BLOCKER, a validation exclusion or
+missing requirement, and do not ask questions about dismissed candidates.
+Every question must reference issue_ids belonging to its owner. Buyer requirements
+remain buyer-owned; supplier questions may be conditional on those answers but
+must resolve that supplier's actual terms. Select the top 2-3 questions per supplier
+(maximum 3; fewer if there are fewer useful questions). Address all BLOCKER issues
+first, then HIGH, MEDIUM, LOW. Do not spend a question on a lower severity while a
+higher unresolved issue lacks coverage. Combine closely related issues in one
+question when appropriate; do not bury unrelated topics in one broad question.
+Every clarification condition in recommendation text MUST be recorded in
+clarification_issue_ids. Use an empty array only if the recommendation contains no
+specific unresolved condition. Every referenced condition needs a drafted question
+addressing that same issue ID, in the buyer section for shared requirements or
+the supplier section for its own terms. Conditions cannot refer to another supplier.
 Return exactly one recommendation per supplier, keyed by its source ID. Its action
 must be advance, hold, or do_not_advance. Advance means shortlist for further
 commercial/technical clarification, not approval to purchase. Explain the next

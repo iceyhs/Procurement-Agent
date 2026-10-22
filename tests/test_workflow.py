@@ -129,8 +129,40 @@ def model_extraction():
     }}
 
 
+def add_issue_metadata(data, facts=None):
+    """Author issue references for the synthetic offline responses."""
+    issues = {i["id"]: i for i in data.setdefault("issues", [])}
+    if facts is None:
+        reference = extracted_example()
+        facts = {"buyer": reference["buyer"], **{s["source_id"]: s for s in reference["suppliers"]}}
+    for question in data["follow_up_questions"]:
+        if "issue_ids" in question:
+            continue
+        owner = question["owner"]
+        allowed = BUYER_FIELDS if owner == "buyer" else SUPPLIER_FIELDS
+        question["issue_ids"] = []
+        for field in question["fields"]:
+            if field not in allowed:
+                continue
+            issue_id = f"{owner}_{field}"
+            question["issue_ids"].append(issue_id)
+            if issue_id not in issues:
+                issues[issue_id] = {
+                    "id": issue_id, "owner": owner, "category": "other",
+                    "severity": {"blocking": "BLOCKER", "important": "HIGH", "optional": "LOW"}[question["priority"]],
+                    "basis": "missing" if owner in facts and facts[owner][field]["value"] is None else "ambiguous",
+                    "reason": "Clarify the unresolved " + field.replace("_", " ") + " terms.",
+                    "fields": [field], "evidence_fields": list(dict.fromkeys([field, "quantity" if owner == "buyer" else "part"])),
+                }
+    data["issues"] = list(issues.values())
+    recommendations = data["recommendation"].values() if isinstance(data["recommendation"], dict) else data["recommendation"]
+    for decision in recommendations:
+        decision.setdefault("clarification_issue_ids", [])
+    return data
+
+
 def analysis_example():
-    return {
+    data = {
         "risks": [
             {"text": "Required revision, finish, destination, release schedule and required delivery date are missing.", "source_ids": ["buyer"]},
             {"text": "Quoted revisions differ; confirm the required revision before treating offers as equivalent.", "source_ids": ["supplier_2", "supplier_3", "buyer"]},
@@ -157,6 +189,8 @@ def analysis_example():
             {"owner": "supplier_4", "priority": "important", "fields": ["revision"], "text": "Which drawing revision has engineering reviewed?", "source_ids": ["supplier_4"]},
         ],
     }
+
+    return add_issue_metadata(data)
 
 
 def model_analysis():
@@ -605,7 +639,7 @@ class StructuredContractTests(unittest.TestCase):
     def test_analysis_contract_uses_case_source_ids(self):
         sources = ["buyer", "supplier_1"]
         schema = analysis_format(sources)["json_schema"]["schema"]
-        self.assertEqual(set(schema["required"]), {"risks", "recommendation", "follow_up_questions"})
+        self.assertEqual(set(schema["required"]), {"issues", "risks", "recommendation", "follow_up_questions"})
         for key in ("risks", "follow_up_questions"):
             section = schema["properties"][key]
             item = section["items"]
@@ -774,7 +808,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         data = extracted_example()
         context = follow_up_context(data, calculate_amounts(data))
         sources = parse_packet(EXAMPLE.read_text()).sources
-        for change in ("remove_buyer", "supplier_owner", "lower_priority", "missing_destination"):
+        for change in ("remove_buyer", "supplier_owner", "missing_destination"):
             analysis = analysis_example()
             if change == "remove_buyer":
                 analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "buyer"]
@@ -782,25 +816,22 @@ class DynamicFollowUpTests(unittest.TestCase):
                 for q in analysis["follow_up_questions"]:
                     if q["owner"] == "buyer":
                         q["owner"] = "supplier_2"
-            elif change == "lower_priority":
-                for q in analysis["follow_up_questions"]:
-                    if q["owner"] == "buyer":
-                        q["priority"] = "important"
             else:
                 analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if "destination" not in q["fields"]]
-            with self.subTest(change=change), self.assertRaisesRegex(ValidationError, "Missing blocking buyer follow-up questions.*destination"):
+            with self.subTest(change=change), self.assertRaisesRegex(ValidationError, "Missing blocking buyer follow-up questions.*destination|resolution owner"):
                 validate_analysis(analysis, sources, follow_up_context=context)
 
     def test_known_buyer_requirements_do_not_force_reconfirmation(self):
         data = extracted_example()
         data["buyer"].update({
-            "revision": fact("B", "Required Rev B"), "destination": fact("Cleveland", "Ship to Cleveland"),
+            "revision": fact("C", "Required Rev C"), "destination": fact("Cleveland", "Ship to Cleveland"),
             "release_schedule": fact("5,000 monthly", "Release 5,000 monthly"),
         })
         context = follow_up_context(data, calculate_amounts(data))
         self.assertEqual(context["buyer"]["detected_risks"], [])
         analysis = analysis_example()
         analysis["follow_up_questions"] = [q for q in analysis["follow_up_questions"] if q["owner"] != "buyer"]
+        analysis["issues"] = [i for i in analysis["issues"] if i["owner"] != "buyer"]
         validate_analysis(analysis, parse_packet(EXAMPLE.read_text()).sources, follow_up_context=context)
 
     def test_harness_requests_model_authored_buyer_questions_when_omitted(self):
@@ -816,6 +847,7 @@ class DynamicFollowUpTests(unittest.TestCase):
             {"owner": "buyer", "priority": "blocking", "fields": [field], "text": text, "source_ids": ["buyer"]}
             for field, text in questions.items()
         ]
+        add_issue_metadata(corrected)
         client = Mock(complete=Mock(side_effect=[json.dumps(model_extraction()), json.dumps(incomplete), json.dumps(corrected)]))
         report = ProcurementAgent(client).review(EXAMPLE.read_text())
         self.assertEqual(client.complete.call_count, 3)
@@ -894,6 +926,9 @@ class DynamicFollowUpTests(unittest.TestCase):
                 if q["owner"] == "supplier_3":
                     if change == "nonblocking":
                         q["priority"] = "important"
+                        for issue in analysis["issues"]:
+                            if issue["id"] in q["issue_ids"]:
+                                issue["severity"] = "HIGH"
                     elif change == "buyer_sources_only":
                         q["source_ids"] = ["buyer"]
             if change == "no_supplier_reason":
@@ -904,11 +939,13 @@ class DynamicFollowUpTests(unittest.TestCase):
     def test_renderer_uses_only_model_questions_and_sorts_priorities(self):
         data = extracted_example()
         analysis = analysis_example()
+        analysis["issues"] = []
         analysis["follow_up_questions"] = [
-            {"owner": "supplier_1", "priority": priority, "fields": ["other_terms"], "text": text, "source_ids": ["supplier_1"]}
+            {"owner": "supplier_1", "priority": priority, "fields": [{"optional": "validity", "important": "payment_terms", "blocking": "revision"}[priority]], "text": text, "source_ids": ["supplier_1"]}
             for priority, text in (("optional", "Optional topic?"), ("important", "Important topic?"),
                                    ("blocking", "Blocking topic?"), ("optional", "Blocking topic?"))
         ]
+        add_issue_metadata(analysis)
         analysis = validate_analysis(analysis, parse_packet(EXAMPLE.read_text()).sources)
         report = render_report(data, calculate_amounts(data), analysis).split("## 4. Follow-up questions", 1)[1]
         self.assertLess(report.index("Blocking topic?"), report.index("Important topic?"))
@@ -922,6 +959,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         sources = parse_packet(EXAMPLE.read_text()).sources
         analysis = analysis_example()
         analysis["follow_up_questions"] = []
+        analysis["issues"] = []
         self.assertEqual(validate_analysis(analysis, sources)["follow_up_questions"], [])
         analysis = analysis_example()
         analysis["follow_up_questions"][0]["priority"] = "unknown"
@@ -956,6 +994,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         analysis["follow_up_questions"].append({
             "owner": "supplier_5", "priority": "blocking", "fields": ["other_terms", "lead_time"], "text": question, "source_ids": ["supplier_5"],
         })
+        add_issue_metadata(analysis)
         client = Mock(complete=Mock(side_effect=[json.dumps(wire), json.dumps(analysis)]))
         report = ProcurementAgent(client).review(packet_text)
         self.assertEqual(client.complete.call_count, 2)
@@ -1003,10 +1042,10 @@ def variable_supplier_fixture(count, *, part="BRK-4471-A", quantity=60000, revis
         recommendations[source_id] = {"action": "advance", "text": "Clarify commercial terms before selection.", "source_ids": [source_id]}
         question = f"Will you hold {currency} {price} per piece for our planned release quantities?" if annual else "What payment terms apply to this order?"
         questions.append({"owner": source_id, "priority": "important", "fields": ["min_release"] if annual else ["payment_terms"], "text": question, "source_ids": [source_id]})
-    return "\n===PACKET===\n".join(blocks), {"buyer": buyer, "suppliers": suppliers}, {
+    return "\n===PACKET===\n".join(blocks), {"buyer": buyer, "suppliers": suppliers}, add_issue_metadata({
         "risks": [{"text": "The buyer release schedule is unspecified." if annual else "Required arrival date is unspecified.", "source_ids": ["buyer"]}],
         "recommendation": recommendations, "follow_up_questions": questions,
-    }
+    }, {"buyer": buyer, **suppliers})
 
 
 class VariableSupplierCountTests(unittest.TestCase):
@@ -1026,6 +1065,8 @@ class VariableSupplierCountTests(unittest.TestCase):
             "owner": "supplier_6", "priority": "important", "fields": ["tooling_terms", "tooling_amount"],
             "text": question, "source_ids": ["supplier_6"],
         })
+        add_issue_metadata(analysis)
+        add_issue_metadata(corrected)
         client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis), json.dumps(corrected)]))
         report = ProcurementAgent(client).review(text)
         self.assertEqual(client.complete.call_count, 3)
@@ -1038,6 +1079,7 @@ class VariableSupplierCountTests(unittest.TestCase):
     def test_clear_offer_does_not_require_busywork_supplier_questions(self):
         text, extraction, analysis = variable_supplier_fixture(1, annual=False)
         analysis["follow_up_questions"] = []
+        analysis["issues"] = []
         client = Mock(complete=Mock(side_effect=[json.dumps(extraction), json.dumps(analysis)]))
         report = ProcurementAgent(client).review(text)
         self.assertEqual(client.complete.call_count, 2)

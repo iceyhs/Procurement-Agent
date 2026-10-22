@@ -7,6 +7,7 @@ from decimal import Decimal, localcontext
 from pathlib import Path
 
 from .calculations import follow_up_context
+from .issues import SEVERITIES, question_severity
 
 
 def _escape(value) -> str:
@@ -39,6 +40,7 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     names = {"buyer": "Buyer"}
     names.update({item["source_id"]: item["supplier"]["value"] or item["source_id"] for item in suppliers})
     amounts = {item["source_id"]: item for item in calculations}
+    issues = {item["id"]: item for item in analysis["issues"]}
     evidence = {}
 
     def fact(source_id, field, value):
@@ -146,6 +148,26 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
             lines.append(f"- {_escape(item['text'])} (Sources: {refs})")
 
     assessment(analysis["risks"])
+    supplier_issues = [issue for issue in issues.values() if issue["owner"] != "buyer"]
+    if supplier_issues:
+        lines += ["", "### Prioritized supplier issues", "",
+                  "| Severity / category | Supplier | Unresolved issue | Evidence |", "| --- | --- | --- | --- |"]
+        for issue in sorted(supplier_issues, key=lambda i: (list(names).index(i["owner"]), SEVERITIES.index(i["severity"]))):
+            support = []
+            evidence_items = issue.get("evidence") or [
+                {"source_id": issue["owner"], "field": field, **next(s for s in suppliers if s["source_id"] == issue["owner"])[field]}
+                for field in issue["evidence_fields"]]
+            for evidence_item in evidence_items:
+                source_id, field = evidence_item["source_id"], evidence_item["field"]
+                label = labels.get(field, field.replace("_", " "))
+                if source_id != issue["owner"]:
+                    label = names[source_id] + " / " + label
+                if evidence_item["value"] is not None:
+                    support.append(f"{_escape(label)}[^{source_id}-{field}]")
+                else:
+                    status = "Unverified" if (source_id, field) in excluded else "Unknown in extraction"
+                    support.append(f"{_escape(label)}: {status}")
+            lines.append(f"| **{issue['severity']}** / {_escape(issue['category'])} | {_escape(names[issue['owner']])} | {_escape(issue['reason'])} | {'; '.join(support)} |")
     follow_up_warnings = analysis.get("follow_up_warnings", [])
     if validation_warnings or follow_up_warnings:
         lines += ["", "### Data-quality notes", ""]
@@ -177,21 +199,26 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         reason = blocker or decision["text"]
         if revision_gap and not blocker:
             reason += " " + revision_gap
+        conditions = [issues[ref]["reason"] for ref in decision["clarification_issue_ids"]]
+        if conditions:
+            reason += " Clarifications: " + " ".join(conditions)
         lines.append(f"| {_escape(names[source_id])} | **{action_labels[action]}** | {_escape(reason)} |")
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():
         lines += [f"### {_escape(name)}", ""]
         questions = [item for item in analysis["follow_up_questions"] if item["owner"] == owner]
         seen = set()
-        for priority, label in (("blocking", "Resolve first"), ("important", "Commercial clarification"), ("optional", "Optional")):
+        questions = sorted(questions, key=lambda q: SEVERITIES.index(q.get("severity") or question_severity(q, issues)))
+        for severity, label in (("BLOCKER", "Resolve first — BLOCKER"), ("HIGH", "HIGH — Commercial clarification"),
+                                ("MEDIUM", "MEDIUM — Commercial clarification"), ("LOW", "LOW — Optional")):
             selected = []
             for item in questions:
                 key = " ".join(item["text"].split()).casefold()
-                if item["priority"] == priority and key not in seen:
+                if (item.get("severity") or question_severity(item, issues)) == severity and key not in seen:
                     selected.append(item)
                     seen.add(key)
             if selected:
-                if priority == "blocking":
+                if severity == "BLOCKER":
                     label += " — buyer requirements for final comparison" if owner == "buyer" else " — supplier-specific issues"
                 lines += [f"**{label}:**", ""]
                 assessment(selected)

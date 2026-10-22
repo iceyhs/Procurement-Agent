@@ -3,6 +3,8 @@
 from decimal import Decimal, localcontext
 import re
 
+from .issues import issue_candidates
+
 
 def _currency_info(raw, extraction):
     if raw is None:
@@ -140,6 +142,9 @@ def follow_up_context(extraction: dict, calculations: list[dict]) -> dict:
         issue["comparability_gaps"].append(calculation["cost_comparability_note"])
         if calculation["quantity_price_extension"] is None:
             issue["comparability_gaps"].append("No supported quantity price extension; quantity, price basis or conditions need clarification.")
+    candidates = issue_candidates(extraction, calculations, context)
+    for owner, issues in candidates.items():
+        context[owner]["issues"] = issues
     return context
 
 

@@ -64,11 +64,20 @@ class ReviewHarness:
                 # fields. Oversized output is excluded, and remains untrusted.
                 if isinstance(response, str) and len(response) <= MAX_RESPONSE_CHARS:
                     messages.append({"role": "assistant", "content": response})
+                if stage == "Extraction":
+                    repair = (
+                        "Fix all listed fields. Extraction evidence must cite the field's own source lines "
+                        "using L3 or L3-L5, not copied or paraphrased excerpts. "
+                        "When unsupported, use {\"value\": null, \"evidence\": null}. "
+                    )
+                else:
+                    repair = (
+                        "Fix the issue/question links and clarification conditions. Address BLOCKER before HIGH, "
+                        "MEDIUM and LOW; keep at most three questions per supplier. Use candidate IDs or "
+                        "declare grounded new issues, and include a question for every recommendation condition. "
+                    )
                 messages.append({"role": "user", "content": (
-                    f"The response failed validation: {error} "
-                    "Fix all listed fields. Extraction evidence must cite the field's own source lines "
-                    "using L3 or L3-L5, not copied or paraphrased excerpts. "
-                    "When unsupported, use {\"value\": null, \"evidence\": null}. "
+                    f"The response failed validation: {error} " + repair +
                     "Return a complete corrected JSON object using the original sources and contract."
                 )})
 
@@ -94,8 +103,8 @@ class ReviewHarness:
             state, ANALYSIS_PROMPT,
             {"extraction": analysis_extraction, "calculations": state.calculations,
              "follow_up_context": questions_context},
-            lambda data, sources: validate_analysis(data, sources, follow_up_context=questions_context),
-            max_tokens=min(16000, max(6000, 800 * len(state.packet.suppliers))), stage="Analysis",
+            lambda data, sources: validate_analysis(data, sources, follow_up_context=questions_context, extraction=state.extraction),
+            max_tokens=min(16000, max(8000, 1200 * len(state.packet.suppliers))), stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
         )
         if state.analysis.get("follow_up_warnings"):

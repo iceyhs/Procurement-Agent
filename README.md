@@ -114,13 +114,15 @@ rather than producing an incomplete comparison.
 
 1. **Normalized supplier comparison** — buyer requirements, quote terms, price
    normalization, conditional quantity extensions, and exact source excerpts.
-2. **Risks / unknowns** — harness warnings and model assessment.
+2. **Risks / unknowns** — warnings, model assessment, and supplier issues with
+   category, severity, reason, and source evidence.
 3. **Shortlist / recommendation** — explicit advance, hold, or do-not-advance action
    per supplier. Advance with clarification means pursue a conditional shortlist;
    hold means a material supplier clarification is needed; do not advance means a
    concrete supplier-specific blocker must be resolved. None approves an award.
 4. **Follow-up questions** — model-drafted questions grounded in this case's gaps
-   and risks, grouped by owner and ordered as blocking, important, then optional.
+   and risks, grouped by owner and ordered BLOCKER, HIGH, MEDIUM, LOW. At most
+   three questions per supplier; fewer when fewer useful clarifications exist.
 
 There are no application-level question templates or supplier-specific question
 lists. The harness sends an issue inventory (missing/uncertain fields, validation
@@ -137,6 +139,32 @@ by the application. A stop decision needs a blocking question referencing that s
 Supplier IDs and schemas come from the input blocks; adding suppliers requires no
 code changes. Detailed terms are displayed in groups of at most four columns for
 readability; the shortlist still includes every supplier in one comparison.
+
+The issue layer runs within the same two-call workflow. Deterministic candidates
+cover confirmed revision/MOQ conflicts, validation exclusions, provisional prices
+or tooling, quoted logistics gaps and uncertain currency. Missing optional fields
+alone do not produce candidates. The model assesses additional ambiguities such
+as amortization, index clauses or first-article approval using the actual facts.
+Each issue records its owner, category, severity, basis (missing, unverified,
+ambiguous or conflicting), reason and supporting extracted-field references. The
+harness resolves references to validated evidence and labels unknown/unverified
+facts. Known terms cannot be represented as missing; included tooling does not
+justify asking whether tooling is included. The model may mark a heuristic
+ambiguity `answered` with cited retained evidence when other quoted terms already
+resolve it. Confirmed blockers and validation gaps cannot be dismissed this way.
+Severity floors for remaining candidates survive model omission or downgrade.
+
+Questions reference issue IDs, are deduplicated, sorted by severity and capped at
+three per supplier. All BLOCKER issues need coverage; lower-priority questions
+cannot replace a higher-priority unresolved issue. Related issues can share a
+question. Shared buyer requirements stay in the Buyer section. The model records
+each recommendation condition in `clarification_issue_ids`; validation requires
+that every condition has a question after selection, with the correct owner.
+Broken references, omitted blockers or unmatched declared conditions use the
+existing correction attempt and fail if still invalid. General non-blocking
+coverage gaps remain advisory notes. Interpreting prose, identifying all conditions
+in the summary and assessing qualitative ambiguity still require model judgment;
+ID checks do not prove semantic correctness of every sentence.
 
 Unit-price extensions are not landed costs or confirmed ordering plans. Currencies
 remain separate. Bare `$` is retained as quoted. When this RFQ also contains an
@@ -173,7 +201,7 @@ the buyer report groups them into concise data-quality notes and preserves evide
 ```text
 cli.py -> agent.py -> harness.py
                        read/split -> LLM extraction -> validate
-                       -> calculate -> LLM analysis -> validate -> render/save
+                       -> calculate / derive issues -> LLM analysis -> validate -> render/save
 ```
 
 - `agent.py`: public review interface.
@@ -181,6 +209,7 @@ cli.py -> agent.py -> harness.py
 - `prompts.py`: extraction and analysis instructions.
 - `schema.py`: field contracts, response shape checks, numeric evidence checks,
   source-line citation resolution, excerpt matching, and source validation.
+- `tools/issues.py`: generic issue candidates, severity floors and question ordering.
   A malformed part-number excerpt is replaced with the exact identifier only when
   that identifier occurs as a whole identifier in the same source. Otherwise it
   is rejected. Correction feedback includes the rejected response and up to twelve

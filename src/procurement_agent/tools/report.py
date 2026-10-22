@@ -41,6 +41,9 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     names.update({item["source_id"]: item["supplier"]["value"] or item["source_id"] for item in suppliers})
     amounts = {item["source_id"]: item for item in calculations}
     issues = {item["id"]: item for item in analysis["issues"]}
+    coverage_warnings = analysis.get("coverage_warnings", [])
+    incomplete_suppliers = {supplier_id for warning in coverage_warnings for supplier_id in warning["supplier_ids"]}
+    incomplete_suppliers.update(w["owner"] for w in coverage_warnings if w["owner"] != "buyer")
     evidence = {}
 
     def fact(source_id, field, value):
@@ -55,6 +58,9 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         return f"{_escape(value['value'])}[^{key}]"
 
     lines = ["# Procurement report", "", f"Comparing {len(suppliers)} supplier replies for this RFQ.", ""]
+    if coverage_warnings:
+        lines += ["**Follow-up draft incomplete:** Some unresolved issues or recommendation conditions lack drafted questions. "
+                  "Review the flagged items in section 4 before using the follow-ups. These conditions remain unresolved.", ""]
     if validation_warnings:
         lines += ["**Data quality:** Some terms need confirmation. Unverified values are excluded "
                   "from affected totals; see the concise notes below.", ""]
@@ -202,10 +208,24 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         conditions = [issues[ref]["reason"] for ref in decision["clarification_issue_ids"]]
         if conditions:
             reason += " Clarifications: " + " ".join(conditions)
-        lines.append(f"| {_escape(names[source_id])} | **{action_labels[action]}** | {_escape(reason)} |")
+        action_label = action_labels[action]
+        if source_id in incomplete_suppliers:
+            action_label += " — follow-up draft incomplete"
+            reason += " Review the uncovered follow-up items in section 4; these conditions are not resolved."
+        lines.append(f"| {_escape(names[source_id])} | **{action_label}** | {_escape(reason)} |")
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():
         lines += [f"### {_escape(name)}", ""]
+        owner_warnings = [w for w in coverage_warnings if w["owner"] == owner]
+        if owner_warnings:
+            lines += ["**Outstanding question drafts:**", ""]
+            pending_ids = {ref for warning in owner_warnings for ref in warning["issue_ids"]}
+            for ref in sorted(pending_ids, key=lambda ref: SEVERITIES.index(issues[ref]["severity"])):
+                issue = issues[ref]
+                lines.append(f"- **{issue['severity']} — Question not included:** {_escape(issue['reason'])}")
+            if any(not warning["issue_ids"] for warning in owner_warnings):
+                lines.append("- Required follow-up coverage for this recommendation needs review.")
+            lines.append("")
         questions = [item for item in analysis["follow_up_questions"] if item["owner"] == owner]
         seen = set()
         questions = sorted(questions, key=lambda q: SEVERITIES.index(q.get("severity") or question_severity(q, issues)))

@@ -31,7 +31,7 @@ class ReviewHarness:
         if self.on_progress is not None:
             self.on_progress(message)
 
-    def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format, allow_partial=False):
+    def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format, allow_partial=False, partial_validator=None):
         # Extraction repair must not consume analysis's chance to repair its own output.
         correction_remaining = 1
         messages = [
@@ -58,6 +58,13 @@ class ReviewHarness:
                         count = len(result.get("validation_warnings", []))
                         self._progress(f"Extraction incomplete: excluded {count} unverified fields; see report warnings.")
                         return result
+                    if partial_validator is not None:
+                        try:
+                            result = partial_validator(load_response(response), state.packet.sources)
+                        except ValidationError:
+                            raise ValidationError(f"Review stopped after invalid model output: {error}") from None
+                        self._progress("Analysis incomplete: follow-up coverage gaps remain; report marked incomplete.")
+                        return result
                     raise ValidationError(f"Review stopped after invalid model output: {error}") from None
                 correction_remaining -= 1
                 self._progress(f"{stage}: requesting this stage's one allowed correction ({error})")
@@ -76,6 +83,8 @@ class ReviewHarness:
                         "Fix the issue/question links and clarification conditions. Address BLOCKER before HIGH, "
                         "MEDIUM and LOW; keep at most three questions per supplier. Use candidate IDs or "
                         "declare grounded new issues, and include a question for every recommendation condition. "
+                        "Within each severity, prioritize the listed uncovered conditions. Combine closely related "
+                        "issues if needed to fit three questions; keep unresolved conditions visible. "
                     )
                 messages.append({"role": "user", "content": (
                     f"The response failed validation: {error} " + repair +
@@ -107,6 +116,9 @@ class ReviewHarness:
             lambda data, sources: validate_analysis(data, sources, follow_up_context=questions_context, extraction=state.extraction),
             max_tokens=min(16000, max(8000, 1200 * len(state.packet.suppliers))), stage="Analysis",
             response_format=analysis_format(list(state.packet.sources)),
+            partial_validator=lambda data, sources: validate_analysis(
+                data, sources, follow_up_context=questions_context, extraction=state.extraction, allow_incomplete=True,
+            ),
         )
         if state.analysis.get("follow_up_warnings"):
             count = len(state.analysis["follow_up_warnings"])

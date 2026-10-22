@@ -562,6 +562,45 @@ class WorkflowTests(unittest.TestCase):
         self.assertIsNone(payload["calculations"][1]["quantity_price_extension"])
         self.assertEqual(client.complete.call_args_list[2].kwargs["response_format"], client.complete.call_args_list[3].kwargs["response_format"])
 
+    def test_repeated_missing_delivery_question_returns_an_explicitly_incomplete_report(self):
+        partial = model_extraction()
+        partial["suppliers"]["supplier_2"]["annual_volume"]["evidence"] = "L999"
+        incomplete = model_analysis()
+        incomplete["recommendation"]["supplier_1"]["clarification_issue_ids"] = ["supplier_1_delivery_terms"]
+        for index, draft in enumerate(incomplete["follow_up_questions"]):
+            if draft["owner"] == "supplier_1":
+                incomplete["follow_up_questions"][index] = {
+                    "owner": "supplier_1", "priority": "important", "fields": ["currency"],
+                    "issue_ids": ["supplier_1_currency"], "source_ids": ["supplier_1"],
+                    "text": "Can you confirm the unit price currency?",
+                }
+        client = self.client(json.dumps(partial), json.dumps(partial), json.dumps(incomplete), json.dumps(incomplete))
+        events = []
+        report = ProcurementAgent(client, on_progress=events.append).review(self.packet)
+        self.assertEqual(client.complete.call_count, 4)
+        self.assertIn("Recommendation/follow-up inconsistency", client.complete.call_args_list[3].args[0][-1]["content"])
+        self.assertTrue(any("Analysis incomplete" in event for event in events))
+        self.assertIn("**Follow-up draft incomplete:**", report)
+        self.assertIn("| Tri-State Metalcraft | **Shortlist / advance with clarification — follow-up draft incomplete**", report)
+        self.assertIn("| Nordkant Prazisionsteile GmbH | **Shortlist / advance with clarification**", report)
+        section = report.split("### Tri-State Metalcraft\n", 1)[1].split("### ", 1)[0]
+        self.assertIn("HIGH — Question not included", section)
+        self.assertIn("quoted scope does not establish delivered cost", section)
+        self.assertIn("Can you confirm the unit price currency?", section)
+        self.assertNotIn("What freight", section)
+        self.assertNotIn("Recommendation/follow-up inconsistency", report)
+        payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
+        self.assertIsNone(payload["extraction"]["suppliers"][1]["annual_volume"]["value"])
+        self.assertIsNone(payload["calculations"][1]["quantity_price_extension"])
+
+    def test_analysis_fallback_still_rejects_unknown_issue_links(self):
+        bad = model_analysis()
+        bad["follow_up_questions"][0]["issue_ids"] = ["buyer_unknown_issue"]
+        client = self.client("{}", json.dumps(model_extraction()), json.dumps(bad), json.dumps(bad))
+        with self.assertRaisesRegex(ValidationError, "known unresolved issues"):
+            ProcurementAgent(client).review(self.packet)
+        self.assertEqual(client.complete.call_count, 4)
+
     def test_analysis_transport_error_is_not_retried_even_with_its_own_correction(self):
         client = self.client(json.dumps(model_extraction()), OpenRouterError("OpenRouter HTTP 402. Check credits."))
         with self.assertRaises(OpenRouterError):

@@ -351,7 +351,13 @@ def _validate_issues(proposed, sources, context, extraction):
     return result
 
 
-def _select_questions(questions, issues, sources):
+def _coverage_gap(warnings, owner, issue_ids, message, kind, supplier_ids=()):
+    if warnings is None:
+        _fail(message)
+    warnings.append({"owner": owner, "issue_ids": list(issue_ids), "kind": kind, "supplier_ids": list(supplier_ids)})
+
+
+def _select_questions(questions, issues, sources, *, required_ids=(), coverage_warnings=None):
     selected = []
     for owner in sources:
         ordered = sorted((q for q in questions if q["owner"] == owner), key=lambda q: SEVERITIES.index(q["severity"]))
@@ -365,24 +371,33 @@ def _select_questions(questions, issues, sources):
                 for field in ("issue_ids", "fields", "source_ids"):
                     kept[field] = list(dict.fromkeys(kept[field] + question[field]))
                 kept["severity"] = question_severity(kept, issues)
-        ranked = sorted(unique.values(), key=lambda q: SEVERITIES.index(q["severity"]))
+        # Within a severity, protect recommendation conditions from the display cap.
+        remaining, ranked = list(unique.values()), []
+        uncovered = set(required_ids)
+        while remaining:
+            question = min(remaining, key=lambda q: (SEVERITIES.index(q["severity"]), -len(set(q["issue_ids"]) & uncovered)))
+            ranked.append(question)
+            uncovered.difference_update(question["issue_ids"])
+            remaining.remove(question)
         chosen = ranked if owner == "buyer" else ranked[:3]
         covered = {ref for q in chosen for ref in q["issue_ids"]}
         missing_blockers = [i["id"] for i in issues.values() if i["owner"] == owner and i["severity"] == "BLOCKER" and i["id"] not in covered]
         if missing_blockers:
             prefix = "Missing blocking buyer follow-up questions: " if owner == "buyer" else f"Missing supplier follow-ups: {owner}: BLOCKER questions required: "
-            _fail(prefix + ", ".join(missing_blockers))
+            _coverage_gap(coverage_warnings, owner, missing_blockers, prefix + ", ".join(missing_blockers), "blocker_question_missing")
         if chosen:
             last = max(SEVERITIES.index(issues[ref]["severity"]) for ref in covered)
             skipped = [i["id"] for i in issues.values() if i["owner"] == owner and i["id"] not in covered and SEVERITIES.index(i["severity"]) < last]
             if skipped:
-                _fail("Higher-priority unresolved issues must be questioned before lower-priority topics: " + ", ".join(skipped))
+                _coverage_gap(coverage_warnings, owner, skipped,
+                              "Higher-priority unresolved issues must be questioned before lower-priority topics: " + ", ".join(skipped), "priority_gap")
         selected.extend(chosen)
     return selected
 
 
-def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=None, extraction=None) -> dict:
+def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=None, extraction=None, allow_incomplete=False) -> dict:
     data = copy.deepcopy(data)
+    coverage_warnings = [] if allow_incomplete else None
     _keys(data, ("issues", "risks", "recommendation", "follow_up_questions"), "analysis")
     issues = _validate_issues(data["issues"], sources, follow_up_context, extraction)
     data["issues"] = list(issues.values())
@@ -443,18 +458,27 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
     recommendations = [item["supplier_id"] for item in data["recommendation"]]
     if len(recommendations) != len(supplier_ids) or set(recommendations) != set(supplier_ids):
         _fail("Include exactly one recommendation action for every supplier.")
-    data["follow_up_questions"] = _select_questions(data["follow_up_questions"], issues, sources)
+    required_ids = {ref for decision in data["recommendation"] for ref in decision["clarification_issue_ids"]}
+    data["follow_up_questions"] = _select_questions(data["follow_up_questions"], issues, sources,
+                                                   required_ids=required_ids, coverage_warnings=coverage_warnings)
     covered_issues = {ref for q in data["follow_up_questions"] for ref in q["issue_ids"]}
     for decision in data["recommendation"]:
         missing = set(decision["clarification_issue_ids"]) - covered_issues
         if missing:
-            _fail("Recommendation/follow-up inconsistency: draft questions for clarification issues " + ", ".join(sorted(missing)))
+            for owner in sources:
+                owned = sorted(ref for ref in missing if issues[ref]["owner"] == owner)
+                if owned:
+                    _coverage_gap(coverage_warnings, owner, owned,
+                                  "Recommendation/follow-up inconsistency: draft questions for clarification issues " + ", ".join(owned),
+                                  "recommendation_question_missing", [decision["supplier_id"]])
     if follow_up_context:
         required = {risk["field"] for risk in follow_up_context.get("buyer", {}).get("detected_risks", []) if risk.get("blocking")}
-        covered = {field for item in data["follow_up_questions"] if item["owner"] == "buyer" and item["priority"] == "blocking" for field in item["fields"]}
+        covered = {field for item in data["follow_up_questions"] if item["owner"] == "buyer" and item["priority"] == "blocking"
+                   for ref in item["issue_ids"] for field in issues[ref]["fields"]}
         if required - covered:
-            _fail("Missing blocking buyer follow-up questions for: " + ", ".join(sorted(required - covered)) + ". Ask the buyer, not a supplier, to establish these requirements.")
-        missing_supplier_questions = []
+            missing_ids = [issue["id"] for issue in issues.values() if issue["owner"] == "buyer" and set(issue["fields"]) & (required - covered)]
+            _coverage_gap(coverage_warnings, "buyer", missing_ids,
+                          "Missing blocking buyer follow-up questions for: " + ", ".join(sorted(required - covered)) + ". Ask the buyer, not a supplier, to establish these requirements.", "buyer_question_missing")
         follow_up_warnings = []
         for decision in data["recommendation"]:
             owner = decision["supplier_id"]
@@ -462,18 +486,23 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
             uncertain = set(issue.get("uncertain_fields", []) + issue.get("validation_fields", []))
             questions = [item for item in data["follow_up_questions"]
                          if item["owner"] == owner and owner in item["source_ids"]
-                         and item["priority"] != "optional" and set(item["fields"]) & set(SUPPLIER_FIELDS)]
+                         and item["priority"] != "optional"]
             if decision["action"] == "do_not_advance":
-                if owner not in decision["source_ids"] or not any(q["priority"] == "blocking" for q in questions):
-                    missing_supplier_questions.append(f"{owner}: do_not_advance requires a supplier-specific blocker and a blocking question citing that supplier; shared buyer unknowns alone do not justify stopping the offer")
+                message = f"{owner}: do_not_advance requires a supplier-specific blocker and a blocking question citing that supplier; shared buyer unknowns alone do not justify stopping the offer"
+                if owner not in decision["source_ids"]:
+                    _fail("Missing supplier follow-ups: " + message)
+                if not any(q["priority"] == "blocking" for q in questions):
+                    _coverage_gap(coverage_warnings, owner, [i["id"] for i in issues.values() if i["owner"] == owner and i["severity"] == "BLOCKER"],
+                                  "Missing supplier follow-ups: " + message, "action_question_missing")
             elif decision["action"] == "hold" and not questions:
-                missing_supplier_questions.append(f"{owner}: hold requires an actionable supplier-owned clarification question")
+                _coverage_gap(coverage_warnings, owner, [i["id"] for i in issues.values() if i["owner"] == owner and i["id"] not in covered_issues],
+                              f"Missing supplier follow-ups: {owner}: hold requires an actionable supplier-owned clarification question", "action_question_missing")
             elif decision["action"] == "advance" and uncertain and not any(set(q["fields"]) & uncertain for q in questions):
                 # Coverage tags cannot establish whether prose resolves a term.
                 # Non-blocking clarification gaps must not discard a usable report.
                 follow_up_warnings.append({"source_id": owner, "fields": sorted(uncertain)})
-        if missing_supplier_questions:
-            _fail("Missing supplier follow-ups: " + "; ".join(missing_supplier_questions[:12]))
         if follow_up_warnings:
             data["follow_up_warnings"] = follow_up_warnings
+    if coverage_warnings:
+        data["coverage_warnings"] = coverage_warnings
     return data

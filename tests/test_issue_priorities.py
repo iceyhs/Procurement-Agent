@@ -207,6 +207,57 @@ class IssuePriorityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValidationError, "Recommendation/follow-up inconsistency"):
             self.validate()
 
+    def test_same_severity_ties_keep_questions_for_recommendation_conditions(self):
+        add_issue(self.analysis, "refund", "payment_terms", "HIGH", "Refund terms need clarification.", "When is the payment refundable?")
+        add_issue(self.analysis, "approval", "other_terms", "HIGH", "Approval duration is unspecified.", "How long does approval take?")
+        add_issue(self.analysis, "validity", "validity", "HIGH", "The issue date is unresolved.", "What date was this offer issued?")
+        timing = add_issue(self.analysis, "timing", "lead_time", "HIGH", "Delivery timing needs resolution.", "Can delivery timing be improved?")
+        self.analysis["recommendation"]["supplier_1"]["clarification_issue_ids"] = [timing]
+        result = self.validate()
+        questions = result["follow_up_questions"]
+        self.assertEqual(len(questions), 3)
+        self.assertIn(timing, {ref for q in questions for ref in q["issue_ids"]})
+        self.assertNotIn("coverage_warnings", result)
+
+    def test_incomplete_blocker_draft_keeps_the_blocker_and_stop_decision(self):
+        timing = add_issue(self.analysis, "timing", "lead_time", "BLOCKER", "Quoted timing conflicts with required delivery.", None, basis="conflict")
+        self.analysis["recommendation"]["supplier_1"].update(action="do_not_advance", clarification_issue_ids=[timing])
+        client = Mock(complete=Mock(side_effect=[json.dumps(self.wire), json.dumps(self.analysis), json.dumps(self.analysis)]))
+        report = ProcurementAgent(client).review(self.text)
+        self.assertEqual(client.complete.call_count, 3)
+        self.assertIn("Follow-up draft incomplete", report)
+        self.assertIn("Do not advance yet — follow-up draft incomplete", report)
+        self.assertIn("BLOCKER — Question not included", report)
+        self.assertIn("Quoted timing conflicts with required delivery.", report)
+        self.assertIn("No follow-up questions drafted for this party.", report)
+
+    def test_incomplete_buyer_condition_stays_in_the_buyer_section(self):
+        self.analysis["issues"].append({"id": "buyer_priorities", "owner": "buyer", "category": "other", "basis": "missing",
+                                        "severity": "MEDIUM", "reason": "Cost and delivery priorities are unresolved.",
+                                        "fields": ["priorities"], "evidence_fields": ["priorities", "quantity"]})
+        self.analysis["recommendation"]["supplier_1"]["clarification_issue_ids"] = ["buyer_priorities"]
+        client = Mock(complete=Mock(side_effect=[json.dumps(self.wire), json.dumps(self.analysis), json.dumps(self.analysis)]))
+        report = ProcurementAgent(client).review(self.text)
+        buyer = report.split("### Buyer\n", 1)[1].split("### Oak Assembly", 1)[0]
+        supplier = report.split("### Oak Assembly\n", 1)[1]
+        self.assertIn("MEDIUM — Question not included", buyer)
+        self.assertNotIn("Question not included", supplier)
+
+    def test_incomplete_mode_does_not_accept_invalid_grounding_or_source_references(self):
+        add_issue(self.analysis, "approval", "other_terms", "HIGH", "Approval duration is unspecified.", None)
+        self.analysis["recommendation"]["supplier_1"]["clarification_issue_ids"] = ["supplier_1_approval"]
+        for invalid in ("source", "missing_known_term", "stop_without_supplier_evidence"):
+            analysis = copy.deepcopy(self.analysis)
+            if invalid == "source":
+                analysis["risks"][0]["source_ids"] = ["unknown"]
+            elif invalid == "missing_known_term":
+                add_issue(analysis, "invented_moq", "moq", "HIGH", "MOQ is missing.", None, basis="missing")
+            else:
+                analysis["recommendation"]["supplier_1"].update(action="do_not_advance", source_ids=["buyer"])
+            with self.subTest(invalid=invalid), self.assertRaises(ValidationError):
+                validate_analysis(analysis, self.packet.sources, follow_up_context=self.context,
+                                  extraction=self.extraction, allow_incomplete=True)
+
     def test_a_shared_buyer_condition_is_covered_in_the_buyer_section(self):
         self.analysis["issues"].append({"id": "buyer_priorities", "owner": "buyer", "category": "other", "basis": "missing",
                                         "severity": "MEDIUM", "reason": "Tradeoffs between cost and delivery have not been specified.",

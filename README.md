@@ -155,14 +155,21 @@ resolve it. Confirmed blockers and validation gaps cannot be dismissed this way.
 Severity floors for remaining candidates survive model omission or downgrade.
 
 Questions reference issue IDs, are deduplicated, sorted by severity and capped at
-three per supplier. All BLOCKER issues need coverage; lower-priority questions
+three per supplier. Within a severity, questions covering recommendation conditions
+are selected first. All BLOCKER issues need coverage; lower-priority questions
 cannot replace a higher-priority unresolved issue. Related issues can share a
 question. Shared buyer requirements stay in the Buyer section. The model records
 each recommendation condition in `clarification_issue_ids`; validation requires
 that every condition has a question after selection, with the correct owner.
-Broken references, omitted blockers or unmatched declared conditions use the
-analysis stage's correction attempt and fail if still invalid. General non-blocking
-coverage gaps remain advisory notes. Interpreting prose, identifying all conditions
+Missing blocker questions, skipped priorities or unmatched declared conditions use
+the analysis stage's correction attempt. If coverage remains incomplete after that
+attempt, a structurally valid analysis becomes an explicitly **Follow-up draft
+incomplete** report. Uncovered issues remain in the report, are listed under the
+correct buyer/supplier owner, and affected recommendations are flagged. The
+application does not fabricate questions, remove conditions, clear blockers or
+add more calls. Unknown references, unsupported issue evidence and malformed
+responses still fail. General non-blocking coverage gaps remain advisory notes.
+Interpreting prose, identifying all conditions
 in the summary and assessing qualitative ambiguity still require model judgment;
 ID checks do not prove semantic correctness of every sentence.
 
@@ -241,7 +248,7 @@ analysis receives only retained facts and warnings, never the discarded claims.
 Invalid price inputs prevent price calculations; unverified price/quantity
 conditions prevent extensions; unverified tooling prevents the tooling scenario.
 Structural errors such as a missing supplier, malformed root response, provider
-failure, or invalid final analysis still stop the run. Evidence checks are not
+failure, or invalid analysis references/evidence still stop the run. Evidence checks are not
 weakened to accept unsupported facts. Analysis has its own correction attempt even
 when extraction needed repair or excluded an unverified field.
 

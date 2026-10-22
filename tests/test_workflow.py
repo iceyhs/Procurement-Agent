@@ -446,8 +446,8 @@ class WorkflowTests(unittest.TestCase):
             return next(responses)
         client = Mock(complete=Mock(side_effect=complete))
         ProcurementAgent(client, on_progress=events.append).review(self.packet)
-        self.assertIn("Extraction: waiting for model response (request 1/3)...", events)
-        self.assertIn("Analysis: waiting for model response (request 2/3)...", events)
+        self.assertIn("Extraction: waiting for model response (request 1/4)...", events)
+        self.assertIn("Analysis: waiting for model response (request 2/4)...", events)
         self.assertEqual(events[-1], "Rendering the report...")
 
     def test_validation_feedback_repairs_remaining_evidence_errors(self):
@@ -491,7 +491,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(payload["calculations"][2]["quantity_price_extension"], "194400")
         self.assertIn("Unknown / not stated", report)
 
-    def test_nonblocking_follow_up_gaps_survive_an_exhausted_correction_budget(self):
+    def test_nonblocking_follow_up_gaps_do_not_consume_an_analysis_correction(self):
         partial = model_extraction()
         partial["suppliers"]["supplier_2"]["annual_volume"]["evidence"] = "L999"
         analysis = model_analysis()
@@ -520,16 +520,53 @@ class WorkflowTests(unittest.TestCase):
         for question in analysis["follow_up_questions"]:
             self.assertIn(question["text"], report)
 
-    def test_shared_correction_budget(self):
+    def test_each_stage_has_only_one_correction_and_no_fifth_call(self):
         for responses in (
             ("{}", "{}"),
-            ("{}", json.dumps(self.extraction), "{}"),
+            ("{}", json.dumps(self.extraction), "{}", "{}"),
             (json.dumps(self.extraction), "{}", "{}"),
         ):
             client = self.client(*responses)
             with self.subTest(responses=responses), self.assertRaises(ValidationError):
                 ProcurementAgent(client).review(self.packet)
-            self.assertLessEqual(client.complete.call_count, 3)
+            self.assertEqual(client.complete.call_count, len(responses))
+            self.assertLessEqual(client.complete.call_count, 4)
+
+    def test_partial_extraction_leaves_analysis_a_correction_for_a_missing_condition_question(self):
+        partial = model_extraction()
+        partial["suppliers"]["supplier_2"]["annual_volume"]["evidence"] = "L999"
+        incomplete = model_analysis()
+        incomplete["recommendation"]["supplier_4"]["clarification_issue_ids"] = ["supplier_4_lead_time"]
+        corrected = copy.deepcopy(incomplete)
+        question = "When can production start, and what end-to-end delivery timing follows the quoted steady-state lead time?"
+        # Keep the three-question limit: replace a lower-value draft with startup timing.
+        for index, draft in enumerate(corrected["follow_up_questions"]):
+            if draft["owner"] == "supplier_4" and draft["fields"] == ["revision"]:
+                corrected["follow_up_questions"][index] = {
+                    "owner": "supplier_4", "priority": "important", "fields": ["lead_time"],
+                    "issue_ids": ["supplier_4_lead_time"], "source_ids": ["supplier_4"], "text": question,
+                }
+                break
+        client = self.client(json.dumps(partial), json.dumps(partial), json.dumps(incomplete), json.dumps(corrected))
+        events = []
+        report = ProcurementAgent(client, on_progress=events.append).review(self.packet)
+        self.assertEqual(client.complete.call_count, 4)
+        self.assertTrue(any("Extraction incomplete: excluded 1" in event for event in events))
+        self.assertIn("Analysis: waiting for model response (request 4/4)...", events)
+        feedback = client.complete.call_args_list[3].args[0][-1]["content"]
+        self.assertIn("Recommendation/follow-up inconsistency", feedback)
+        self.assertIn("supplier_4_lead_time", feedback)
+        self.assertIn(question, report.split("### Brightwater Precision\n", 1)[1])
+        payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
+        self.assertIsNone(payload["extraction"]["suppliers"][1]["annual_volume"]["value"])
+        self.assertIsNone(payload["calculations"][1]["quantity_price_extension"])
+        self.assertEqual(client.complete.call_args_list[2].kwargs["response_format"], client.complete.call_args_list[3].kwargs["response_format"])
+
+    def test_analysis_transport_error_is_not_retried_even_with_its_own_correction(self):
+        client = self.client(json.dumps(model_extraction()), OpenRouterError("OpenRouter HTTP 402. Check credits."))
+        with self.assertRaises(OpenRouterError):
+            ProcurementAgent(client).review(self.packet)
+        self.assertEqual(client.complete.call_count, 2)
 
     def test_no_transport_retry(self):
         client = self.client(OpenRouterError("OpenRouter HTTP 402. Check credits."))

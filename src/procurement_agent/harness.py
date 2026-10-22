@@ -19,7 +19,6 @@ class RunState:
     extraction: dict | None = None
     calculations: list[dict] | None = None
     analysis: dict | None = None
-    correction_remaining: int = 1
     model_calls: int = 0
 
 
@@ -33,13 +32,15 @@ class ReviewHarness:
             self.on_progress(message)
 
     def _request(self, state, prompt, payload, validator, max_tokens, stage, response_format, allow_partial=False):
+        # Extraction repair must not consume analysis's chance to repair its own output.
+        correction_remaining = 1
         messages = [
             {"role": "system", "content": prompt},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
         ]
         while True:
             state.model_calls += 1
-            self._progress(f"{stage}: waiting for model response (request {state.model_calls}/3)...")
+            self._progress(f"{stage}: waiting for model response (request {state.model_calls}/4)...")
             # Transport/provider errors propagate. They are never retried automatically.
             response = self.client.complete(
                 messages, max_tokens=max_tokens, response_format=response_format,
@@ -48,7 +49,7 @@ class ReviewHarness:
             try:
                 return validator(load_response(response), state.packet.sources)
             except ValidationError as error:
-                if state.correction_remaining == 0:
+                if correction_remaining == 0:
                     if allow_partial:
                         try:
                             result = validate_extraction(load_response(response), state.packet.sources, allow_partial=True)
@@ -58,8 +59,8 @@ class ReviewHarness:
                         self._progress(f"Extraction incomplete: excluded {count} unverified fields; see report warnings.")
                         return result
                     raise ValidationError(f"Review stopped after invalid model output: {error}") from None
-                state.correction_remaining -= 1
-                self._progress(f"{stage}: requesting the one allowed correction ({error})")
+                correction_remaining -= 1
+                self._progress(f"{stage}: requesting this stage's one allowed correction ({error})")
                 # Keep the rejected response so the model can repair specific
                 # fields. Oversized output is excluded, and remains untrusted.
                 if isinstance(response, str) and len(response) <= MAX_RESPONSE_CHARS:

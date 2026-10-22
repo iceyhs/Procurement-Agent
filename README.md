@@ -161,7 +161,7 @@ question. Shared buyer requirements stay in the Buyer section. The model records
 each recommendation condition in `clarification_issue_ids`; validation requires
 that every condition has a question after selection, with the correct owner.
 Broken references, omitted blockers or unmatched declared conditions use the
-existing correction attempt and fail if still invalid. General non-blocking
+analysis stage's correction attempt and fail if still invalid. General non-blocking
 coverage gaps remain advisory notes. Interpreting prose, identifying all conditions
 in the summary and assessing qualitative ambiguity still require model judgment;
 ID checks do not prove semantic correctness of every sentence.
@@ -233,7 +233,7 @@ definitions as local validation. Every fact must be an object, even when unknown
 bare strings or nulls in place of fact objects are invalid. Local validation still
 checks evidence, numeric support, and conditions after structured generation.
 
-After the one allowed correction, remaining invalid facts are excluded and shown
+After extraction's one allowed correction, remaining invalid facts are excluded and shown
 as **Unverified / excluded**, distinct from terms that were not stated. The report
 has a concise data-quality notice and groups affected terms by supplier. Detailed
 validation reasons remain internal. The
@@ -242,7 +242,8 @@ Invalid price inputs prevent price calculations; unverified price/quantity
 conditions prevent extensions; unverified tooling prevents the tooling scenario.
 Structural errors such as a missing supplier, malformed root response, provider
 failure, or invalid final analysis still stop the run. Evidence checks are not
-weakened to accept unsupported facts, and no extra retry budget is added.
+weakened to accept unsupported facts. Analysis has its own correction attempt even
+when extraction needed repair or excluded an unverified field.
 
 Review requires a model/provider endpoint supporting JSON Schema structured outputs.
 The default `openai/gpt-4o-mini` supports this parameter. Unsupported endpoint/schema
@@ -252,8 +253,9 @@ establish structured-output readiness. See OpenRouter's
 [structured-output documentation](https://openrouter.ai/docs/guides/features/structured-outputs).
 
 Normally there are two model calls: extraction, then analysis of validated facts
-and calculations. At most one additional correction call is allowed across both
-stages (three calls maximum). Provider/transport failures are not retried. Each
+and calculations. Each stage has at most one additional correction call (four
+calls maximum). Extraction cannot consume analysis's correction budget.
+Provider/transport failures are not retried. Each
 request has a 60-second network timeout and a bounded output-token budget.
 State is in memory for that run; there is no database or cross-run conversation.
 

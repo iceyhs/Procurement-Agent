@@ -1,9 +1,9 @@
 # Procurement Agent
 
-Python 3.12+ CLI for the Aron procurement exercise. It reconciles free-text supplier
-quotes against a buyer's requirements and produces an evidence-backed Markdown
-report. It uses OpenRouter, Python's standard library, and `python-dotenv` for the
-interactive chat entry point.
+Procurement Review CLI for the Aron procurement exercise. It reconciles free-text
+supplier quotes against a buyer's requirements and produces evidence-backed
+Markdown and PDF reports. It uses OpenRouter, Python's standard library, and
+`python-dotenv` to load local configuration through `main.py`.
 
 The bracket exercise is an example, not a runtime preset. Each run takes the item,
 quantity and its basis, currency, relevant specifications, and supplier set from
@@ -12,62 +12,105 @@ or follow-up questions for unrelated purchases. The MVP compares unit-priced goo
 for one RFQ per run; mixed measurement units or service pricing need explicit
 normalization support rather than being silently treated as per-piece prices.
 
-## Setup
+## Quick Start
+
+**Procurement Review is the primary functionality.** It reads buyer requirements
+and supplier quotes, uses LLM-based structured extraction, validates extracted
+facts and source evidence, performs deterministic calculations and risk checks,
+and uses LLM analysis to produce recommendations and follow-up questions. It
+saves `report.md` and renders `report.pdf` from the same Markdown artifact.
+
+You need **Python 3.12+**, an OpenRouter account with API credits, and **Pandoc and
+XeLaTeX** for PDF generation. Python dependency installation does not install the
+PDF tools.
+
+1. **Install the project.** From your local checkout (replace the path below):
+
+   ```bash
+   cd /path/to/Procurement-Agent
+   python3.12 -m venv .venv
+   .venv/bin/python -m pip install -e .
+   test -e .env || cp .env.example .env
+   ```
+
+   `pip install -e .` installs the project and dependencies declared in
+   `pyproject.toml`.
+
+2. **Configure the API key.** Get a key from
+   [OpenRouter](https://openrouter.ai/settings/keys), then edit `.env` in the
+   repository root, next to `main.py`:
+
+   ```dotenv
+   OPENROUTER_API_KEY=your-openrouter-api-key
+   OPENROUTER_MODEL=openai/gpt-4.1
+   ```
+
+   Replace the placeholder with your key. `openai/gpt-4.1` is the recommended
+   model. `.env` is ignored by Git. `main.py` loads it automatically; exported
+   environment variables take precedence. Reviews send the packet to OpenRouter
+   and its model provider and incur API charges.
+
+3. **Install the PDF tools** for your platform:
+
+   - macOS with [Homebrew](https://brew.sh/): run `brew install pandoc`, then
+     `brew install --cask mactex-no-gui`. Reopen your terminal or run
+     `export PATH="/Library/TeX/texbin:$PATH"`.
+   - Debian/Ubuntu: run `sudo apt-get update`, then
+     `sudo apt-get install pandoc texlive-xetex texlive-latex-extra`.
+
+   Check that `pandoc --version` and `xelatex --version` both work in the terminal
+   where you run the agent.
+
+4. **Optionally check the connection** (also a paid model call):
+
+   ```bash
+   .venv/bin/python main.py check
+   ```
+
+5. **Run Procurement Review:**
+
+   ```bash
+   .venv/bin/python main.py review examples/quote_packet.txt -o report.md
+   ```
+
+   Find `report.md` and `report.pdf` in the current directory (the project root
+   when following these steps). This repository includes example reports, so add
+   `--force` to the command when intentionally replacing those existing files.
+   A successful run prints `Report saved to report.md` and `PDF saved to report.pdf`.
+   If PDF export fails, the successful Markdown result is kept; see
+   [PDF setup and export recovery](#install-pdf-dependencies).
+
+Running `.venv/bin/python main.py` without a subcommand starts **optional
+Interactive Chat** for free-text conversations. Chat does **not** execute the full
+procurement review workflow or generate formal reports. See
+[Interactive Chat](#optional-interactive-chat) for details.
+
+## Procurement Review (primary workflow)
+
+Use the Quick Start command for the bundled example. For your own input, put buyer
+requirements and supplier replies into one UTF-8 text file using the
+[input format below](#input-format), then run:
 
 ```bash
-cd /workspace/Procurement-Agent
-python3.12 -m venv .venv
-.venv/bin/python -m pip install -e .
-test -e .env || cp .env.example .env
-# Edit .env locally: add your key and choose your model. Do not share the file.
-set -a
-. ./.env
-set +a
-```
-
-The CLI reads process environment variables; it does not automatically load .env.
-Alternatively export OPENROUTER_API_KEY and OPENROUTER_MODEL directly. HTTPS access
-to openrouter.ai and an account with access/credits for the selected model are
-required. Each check/review sends real API requests and may incur charges. To test
-the configured account separately, run `.venv/bin/procurement-agent check`.
-
-## Interactive chat
-
-After installing the project and filling in `.env`, run from the repository root:
-
-```bash
-.venv/bin/python main.py
-```
-
-This entry point automatically loads `.env` without overriding existing process
-variables. Enter a question at `You:`; type `exit` or `quit` to leave. Conversation
-history is kept in memory for this session and sent with each question; it is not
-saved between runs. Each turn may incur API charges. Quotes must be provided in
-the conversation; the agent does not automatically read repository files.
-Chat is a separate free-text interface; use the `review` command below for the
-validated extraction, deterministic calculations, and four-section report.
-
-## Review a packet
-
-Using `main.py` automatically loads the repository's `.env`, preserving existing
-process variables, and runs the same CLI and harness:
-
-```bash
-.venv/bin/python main.py review examples/quote_packet.txt -o report.md
-# For your own input:
 .venv/bin/python main.py review quote_packet.txt -o report.md
 ```
 
-`main.py check` runs the connection check; `main.py --help` shows CLI options.
-Running `main.py` without arguments still opens interactive chat.
+Add `--force` only when you want to replace existing Markdown and PDF outputs.
+`main.py --help` shows all commands and options.
 
 Alternatively, use the installed command after exporting the configuration:
 
 ```bash
-.venv/bin/procurement-agent review examples/quote_packet.txt
+set -a
+. ./.env
+set +a
+.venv/bin/procurement-agent review examples/quote_packet.txt --force
 # Or use your own input and output paths:
 .venv/bin/procurement-agent review quote_packet.txt --output report.md
 ```
+
+Unlike `main.py`, the installed `procurement-agent` command does not load `.env`
+automatically; the export commands above load your trusted local configuration.
 
 The default outputs are `report.md` and `report.pdf` in the current directory.
 After saving Markdown, `review` automatically exports the PDF from that file,
@@ -115,6 +158,22 @@ each model request is bounded by its context/output capacity. Output budgets gro
 with the number of replies up to 16,000 tokens; oversized responses fail clearly
 rather than producing an incomplete comparison.
 
+### Install PDF dependencies
+
+Automatic PDF export also requires **Pandoc and XeLaTeX**. Installing the Python
+package does not install these tools.
+
+The [Quick Start](#quick-start) includes macOS and Debian/Ubuntu installation
+commands. Verify that both tools are available in the terminal where you run the agent:
+
+```bash
+pandoc --version
+xelatex --version
+```
+
+If `xelatex` is still not found on macOS, reopen your terminal after installing
+MacTeX, or add `export PATH="/Library/TeX/texbin:$PATH"` to your shell configuration.
+
 ### Report
 
 The saved Markdown remains the source artifact; `review` creates its reviewer PDF
@@ -122,13 +181,13 @@ automatically. To retry PDF export or export an existing report without re-runni
 the model:
 
 ```bash
-.venv/bin/python main.py pdf report.md -o report.pdf
-# Add --force to replace an existing PDF after a successful export.
+.venv/bin/python main.py pdf report.md -o report.pdf --force
 ```
 
-PDF export requires Pandoc and XeLaTeX. On macOS install Pandoc with
-`brew install pandoc` and a TeX distribution such as MacTeX. On Debian/Ubuntu use
-`sudo apt-get install pandoc texlive-xetex texlive-latex-extra`.
+If a run reports `Markdown saved ... but PDF export failed`, the Markdown is
+already usable. Install or fix the [PDF dependencies](#install-pdf-dependencies),
+then run the export command above. It requires no API key and makes no model
+calls, so there is no need to repeat the paid review.
 The exporter typesets the existing Markdown locally; it
 makes no model calls and does not change `report.md`. Landscape tables have
 repeated headers, and numbered source excerpts appear at the end. All four
@@ -301,6 +360,20 @@ as untrusted data, and model text is escaped during report rendering. Evidence
 matching verifies traceability, not that an interpretation is correct or every
 important term was extracted. Narrative conclusions and technical compliance
 still require buyer review. The agent cannot send email, negotiate, or place orders.
+
+## Optional interactive chat
+
+After installing the project and filling in `.env`, run from the repository root:
+
+```bash
+.venv/bin/python main.py
+```
+
+Enter a question at `You:`; type `exit` or `quit` to leave. Conversation history
+is kept in memory for this session and sent with each question; it is not saved
+between runs. Each turn may incur API charges. Quotes must be provided in the
+conversation; chat does not automatically read repository files or generate the
+validated reports. Use `main.py review` for the quote comparison workflow.
 
 ## Tests (no API key or network required)
 

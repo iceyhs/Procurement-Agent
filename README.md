@@ -92,7 +92,7 @@ requirements and supplier replies into one UTF-8 text file using the
 [input format below](#input-format), then run:
 
 ```bash
-.venv/bin/python main.py review quote_packet.txt -o report.md
+.venv/bin/python main.py review examples/quote_packet.txt -o report.md
 ```
 
 Add `--force` only when you want to replace existing Markdown and PDF outputs.

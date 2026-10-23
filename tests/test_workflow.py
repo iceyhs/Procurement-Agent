@@ -402,6 +402,14 @@ class CalculationTests(unittest.TestCase):
         data["buyer"]["quantity"] = fact()
         self.assertTrue(all(item["quantity_price_extension"] is None for item in calculate_amounts(data)))
 
+    def test_missing_price_basis_does_not_default_to_per_piece_or_zero(self):
+        data = extracted_example()
+        data["suppliers"][2]["price_basis_quantity"] = fact()
+        result = calculate_amounts(data)[2]
+        self.assertIsNone(result["normalized_unit_price"])
+        self.assertIsNone(result["quantity_price_extension"])
+        self.assertIsNone(result["extension_plus_stated_tooling"])
+
     def test_no_intermediate_rounding(self):
         data = extracted_example()
         supplier = data["suppliers"][2]
@@ -616,9 +624,11 @@ class WorkflowTests(unittest.TestCase):
         bad = model_analysis()
         bad["follow_up_questions"][0]["issue_ids"] = ["buyer_unknown_issue"]
         client = self.client("{}", json.dumps(model_extraction()), json.dumps(bad), json.dumps(bad))
-        with self.assertRaisesRegex(ValidationError, "known unresolved issues"):
+        with self.assertRaisesRegex(ValidationError, "known unresolved issues") as error:
             ProcurementAgent(client).review(self.packet)
         self.assertEqual(client.complete.call_count, 4)
+        self.assertIn("buyer_unknown_issue", str(error.exception))
+        self.assertIn("Known unresolved IDs for buyer:", str(error.exception))
 
     def test_analysis_transport_error_is_not_retried_even_with_its_own_correction(self):
         client = self.client(json.dumps(model_extraction()), OpenRouterError("OpenRouter HTTP 402. Check credits."))
@@ -647,6 +657,42 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("<script>", report)
         self.assertNotIn("\n## Injected", report)
         self.assertNotIn("[click](", report)
+
+    def test_cli_input_read_errors_stop_before_model_calls(self):
+        for error in (FileNotFoundError(2, "No such file", "quote_packet.txt"),
+                      PermissionError(13, "Permission denied", "quote_packet.txt")):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "report.md"
+                with patch("pathlib.Path.open", side_effect=error), \
+                     patch("procurement_agent.cli.OpenRouterClient.from_env") as config, \
+                     patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    self.assertEqual(main(["review", "quote_packet.txt", "-o", str(output)]), 1)
+                config.assert_not_called()
+                self.assertIn("Error:", stderr.getvalue())
+                self.assertIn("quote_packet.txt", stderr.getvalue())
+                self.assertIn(error.strerror, stderr.getvalue())
+                self.assertFalse(output.exists())
+                self.assertFalse(output.with_suffix(".pdf").exists())
+
+    def test_cli_exhausted_invalid_output_returns_error_and_preserves_reports(self):
+        for response in ("not JSON", "{}"):
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "report.md"
+                pdf = output.with_suffix(".pdf")
+                output.write_text("Previous successful Markdown", encoding="utf-8")
+                pdf.write_bytes(b"previous PDF")
+                client = self.client(response, response)
+                with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client), \
+                     patch("procurement_agent.cli.export_pdf") as export, \
+                     patch("sys.stdout", new_callable=io.StringIO) as stdout, \
+                     patch("sys.stderr", new_callable=io.StringIO) as stderr:
+                    self.assertEqual(main(["review", str(EXAMPLE), "-o", str(output), "--force"]), 1)
+                self.assertEqual(client.complete.call_count, 2)
+                export.assert_not_called()
+                self.assertIn("Error: Review stopped after invalid model output:", stderr.getvalue())
+                self.assertEqual(stdout.getvalue(), "")
+                self.assertEqual(output.read_text(), "Previous successful Markdown")
+                self.assertEqual(pdf.read_bytes(), b"previous PDF")
 
     def test_cli_writes_report_and_preserves_existing_output(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -723,16 +769,29 @@ class StructuredContractTests(unittest.TestCase):
         supplier = schema["$defs"]["supplier"]
         self.assertEqual(set(supplier["properties"]), set(SUPPLIER_FIELDS))
         self.assertEqual(named_suppliers["properties"]["supplier_1"], {"$ref": "#/$defs/supplier"})
-        fact_schema = schema["$defs"]["fact"]
+        fact_schema, unknown_schema = schema["$defs"]["fact"]["anyOf"]
         self.assertEqual(fact_schema["type"], "object")
         self.assertEqual(set(fact_schema["required"]), {"value", "evidence"})
-        self.assertEqual(fact_schema["properties"]["value"]["type"], ["string", "null"])
+        self.assertEqual(fact_schema["properties"]["value"]["type"], "string")
+        self.assertEqual(fact_schema["properties"]["evidence"]["type"], "string")
+        self.assertEqual(unknown_schema["properties"], {"value": {"type": "null"}, "evidence": {"type": "null"}})
+        self.assertFalse(unknown_schema["additionalProperties"])
         self.assertIn("pattern", fact_schema["properties"]["evidence"])
         self.assertEqual(buyer["properties"]["part"], {"$ref": "#/$defs/fact"})
         self.assertFalse(schema["additionalProperties"])
         self.assertFalse(buyer["additionalProperties"])
         self.assertFalse(supplier["additionalProperties"])
         self.assertFalse(fact_schema["additionalProperties"])
+        for reference in [*buyer["properties"].values(), *supplier["properties"].values()]:
+            self.assertEqual(set(reference), {"$ref"}, "Provider rejects sibling keywords beside $ref")
+        integer = schema["$defs"]["integer_fact"]["anyOf"][0]["properties"]["value"]["pattern"]
+        decimal = schema["$defs"]["decimal_fact"]["anyOf"][0]["properties"]["value"]["pattern"]
+        self.assertEqual(buyer["properties"]["quantity"]["$ref"], "#/$defs/integer_fact")
+        self.assertEqual(supplier["properties"]["quoted_price"]["$ref"], "#/$defs/decimal_fact")
+        self.assertRegex("100", integer)
+        self.assertNotRegex("100 pieces", integer)
+        self.assertNotRegex("60,000", integer)
+        self.assertRegex("3.80", decimal)
 
     def test_analysis_contract_uses_case_source_ids(self):
         sources = ["buyer", "supplier_1"]
@@ -753,6 +812,21 @@ class StructuredContractTests(unittest.TestCase):
         self.assertEqual(recommendations["required"], ["supplier_1"])
         self.assertEqual(recommendations["properties"]["supplier_1"]["properties"]["action"]["enum"],
                          ["advance", "hold", "do_not_advance"])
+
+    def test_runtime_analysis_schema_distinguishes_real_gaps_from_known_terms(self):
+        data = extracted_example()
+        context = follow_up_context(data, calculate_amounts(data))
+        schema = analysis_format(["buyer", *(s["source_id"] for s in data["suppliers"])],
+                                 extraction=data, follow_up_context=context)["json_schema"]["schema"]
+        ordinary, missing = schema["properties"]["issues"]["items"]["anyOf"]
+        self.assertNotIn("missing", ordinary["properties"]["basis"]["enum"])
+        self.assertNotIn("unverified", ordinary["properties"]["basis"]["enum"])
+        self.assertEqual(missing["properties"]["basis"]["enum"], ["missing"])
+        self.assertNotIn("quoted_price", missing["properties"]["fields"]["items"]["enum"])
+        self.assertIn("revision", missing["properties"]["fields"]["items"]["enum"])
+        condition = schema["properties"]["recommendation"]["properties"]["supplier_1"]["properties"]["clarification_issue_ids"]["items"]["pattern"]
+        self.assertRegex("buyer_revision", condition)
+        self.assertNotRegex("supplier_2_revision", condition)
 
 
 class BuyerReportQualityTests(unittest.TestCase):

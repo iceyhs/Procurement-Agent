@@ -255,7 +255,9 @@ exact original excerpt in the report. Users do not need to number input lines.
 Supplier records are keyed by their source IDs, with every key required by the
 schema, rather than an array that could omit or duplicate a supplier.
 Prices retain their original denominator until the harness calculates per-piece
-amounts. Numeric fields use decimal strings.
+amounts. Numeric fields use decimal strings with schema-enforced numeric formats.
+The response schema pairs a known value with a source citation, or an unknown
+value with a null citation; it does not allow a null value with a citation.
 Both review calls send `response_format: json_schema` with `strict: true` and
 `provider.require_parameters: true`, using schemas built from the same field
 definitions as local validation. Every fact must be an object, even when unknown;
@@ -275,11 +277,17 @@ weakened to accept unsupported facts. Analysis has its own correction attempt ev
 when extraction needed repair or excluded an unverified field.
 
 Review requires a model/provider endpoint supporting JSON Schema structured outputs.
-The default `openai/gpt-4o-mini` supports this parameter. Unsupported endpoint/schema
+The recommended configuration is `openai/gpt-4.1`, which passed the six live
+semantic evals and costs more than `gpt-4o-mini`. Requests use `temperature=0`;
+the endpoint must support both this parameter and JSON Schema. If you already
+have a `.env`, update its `OPENROUTER_MODEL` value explicitly. Unsupported endpoint/schema
 errors stop the run with an actionable message; there is no silent plain-text
 fallback. Chat and the connection check remain plain-text requests and do not
 establish structured-output readiness. See OpenRouter's
 [structured-output documentation](https://openrouter.ai/docs/guides/features/structured-outputs).
+
+An exported model setting takes precedence over `.env`. To select the recommended
+model in an existing shell, run `export OPENROUTER_MODEL=openai/gpt-4.1`.
 
 Normally there are two model calls: extraction, then analysis of validated facts
 and calculations. Each stage has at most one additional correction call (four
@@ -299,6 +307,11 @@ still require buyer review. The agent cannot send email, negotiate, or place ord
 ```bash
 .venv/bin/python -m unittest discover -s tests -v
 ```
+
+Six opt-in live semantic evaluations and their rubric are documented in
+[`evals/README.md`](evals/README.md). They use synthetic packets and structured
+behavior checks, with no exact-prose comparisons. They are separate from these
+offline tests and make paid model calls only when explicitly enabled.
 
 Tests cover the reference packet's calculations, parsing, evidence validation,
 missing fields, call limits, report sections, output preservation, and a CLI run

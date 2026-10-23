@@ -42,30 +42,55 @@ def _structured_format(name, schema):
 
 def extraction_format(source_ids: list[str]) -> dict:
     """Named supplier properties enforce exactly one record per source."""
-    fact = _object_schema({
-        "value": {"type": ["string", "null"], "minLength": 1, "description": "Extracted value; numeric values are decimal strings. Null when unknown."},
+    known_fact = _object_schema({
+        "value": {"type": "string", "minLength": 1, "description": "Extracted supported value; numeric values are decimal strings."},
         "evidence": {
-            "type": ["string", "null"], "pattern": r"^L[1-9][0-9]*(?:-L[1-9][0-9]*)?$",
-            "description": "Supporting source lines, e.g. L3 or L3-L5, within this record's own source. Null when unknown.",
+            "type": "string", "pattern": r"^L[1-9][0-9]*(?:-L[1-9][0-9]*)?$",
+            "description": "Supporting source lines, e.g. L3 or L3-L5, within this record's own source.",
         },
     })
+    fact = {"anyOf": [known_fact, _object_schema({"value": {"type": "null"}, "evidence": {"type": "null"}})]}
+    decimal_fact = copy.deepcopy(fact)
+    decimal_fact["anyOf"][0]["properties"]["value"]["pattern"] = r"^[0-9]{1,12}(?:\.[0-9]{1,6})?$"
+    integer_fact = copy.deepcopy(fact)
+    integer_fact["anyOf"][0]["properties"]["value"]["pattern"] = r"^[1-9][0-9]{0,11}$"
+    annual_fact = copy.deepcopy(integer_fact)
+    annual_fact["description"] = "Annual tier for the selected price in THIS supplier's quote; null when no price/tier is quoted. Never copy buyer demand."
+    release_fact = copy.deepcopy(integer_fact)
+    release_fact["description"] = "An explicitly stated MINIMUM release threshold. Merely accepting the buyer's planned call-off size is not a minimum. Cite the threshold's own source line, not another supplier's layout; otherwise null."
+    tooling_fact = copy.deepcopy(decimal_fact)
+    tooling_fact["description"] = "A separately payable numeric tooling fee explicitly quoted by this supplier. Included, absorbed or pending tooling means null, never an invented numeric zero."
+    adjustment_fact = copy.deepcopy(fact)
+    adjustment_fact["description"] = "Any future surcharge, variable supplement, escalation or index clause. Preserve the clause even if its formula/ceiling/amount is unknown; do not bury it only in other_terms."
+
+    def field_schema(field):
+        kind = "integer_fact" if field in INTEGER_FIELDS else "decimal_fact" if field in NUMERIC_FIELDS else "fact"
+        kind = {"annual_volume": "annual_fact", "min_release": "release_fact", "tooling_amount": "tooling_fact", "price_adjustment": "adjustment_fact"}.get(field, kind)
+        return {"$ref": f"#/$defs/{kind}"}
+
     schema = _object_schema({
-        "buyer": _object_schema({field: {"$ref": "#/$defs/fact"} for field in BUYER_FIELDS}),
+        "buyer": _object_schema({field: field_schema(field) for field in BUYER_FIELDS}),
         "suppliers": _object_schema({source_id: {"$ref": "#/$defs/supplier"} for source_id in source_ids}),
     })
     schema["$defs"] = {
         "fact": fact,
-        "supplier": _object_schema({field: {"$ref": "#/$defs/fact"} for field in SUPPLIER_FIELDS}),
+        "decimal_fact": decimal_fact,
+        "integer_fact": integer_fact,
+        "annual_fact": annual_fact,
+        "release_fact": release_fact,
+        "tooling_fact": tooling_fact,
+        "adjustment_fact": adjustment_fact,
+        "supplier": _object_schema({field: field_schema(field) for field in SUPPLIER_FIELDS}),
     }
     return _structured_format("procurement_extraction", schema)
 
 
-def analysis_format(source_ids: list[str]) -> dict:
+def analysis_format(source_ids: list[str], *, extraction=None, follow_up_context=None) -> dict:
     item = {
         "text": {"type": "string", "description": "Plain-prose assessment grounded in the referenced facts and calculations."},
         "source_ids": {"type": "array", "items": {"type": "string", "enum": source_ids}},
     }
-    return _structured_format("procurement_analysis", _object_schema({
+    contract = _structured_format("procurement_analysis", _object_schema({
         "issues": {"type": "array", "items": _object_schema({
             "id": {"type": "string", "description": "Unique ID prefixed by the owner, e.g. supplier_1_currency."},
             "owner": {"type": "string", "enum": source_ids},
@@ -76,11 +101,15 @@ def analysis_format(source_ids: list[str]) -> dict:
             "fields": {"type": "array", "items": {"type": "string", "enum": list(dict.fromkeys((*BUYER_FIELDS, *SUPPLIER_FIELDS)))}},
             "evidence_fields": {"type": "array", "items": {"type": "string", "enum": list(dict.fromkeys((*BUYER_FIELDS, *SUPPLIER_FIELDS)))}},
         })},
-        "risks": {"type": "array", "items": _object_schema(item)},
+        "risks": {"type": "array", "description": "Additional grounded risk summaries. May be empty; do not invent risks or duplicate every issue.", "items": _object_schema(item)},
         "recommendation": _object_schema({
             source_id: _object_schema({
                 **item, "action": {"type": "string", "enum": ["advance", "hold", "do_not_advance"]},
-                "clarification_issue_ids": {"type": "array", "items": {"type": "string"}},
+                "clarification_issue_ids": {
+                    "type": "array",
+                    "description": "Copy known unresolved IDs or declare new issues first. Include material supplier-owned conditions as well as buyer dependencies when advancing.",
+                    "items": {"type": "string", "pattern": rf"^(?:buyer|{source_id})_[A-Za-z0-9_]{{1,70}}$"},
+                },
             }) for source_id in source_ids if source_id != "buyer"
         }),
         "follow_up_questions": {
@@ -88,10 +117,40 @@ def analysis_format(source_ids: list[str]) -> dict:
                 **item, "owner": {"type": "string", "enum": source_ids},
                 "priority": {"type": "string", "enum": ["blocking", "important", "optional"]},
                 "fields": {"type": "array", "items": {"type": "string", "enum": list(dict.fromkeys((*BUYER_FIELDS, *SUPPLIER_FIELDS)))}},
-                "issue_ids": {"type": "array", "items": {"type": "string"}},
+                "issue_ids": {"type": "array", "description": "Copy unresolved candidate IDs exactly, or declare new issues in issues first. Never reference an issue marked answered.", "items": {"type": "string"}},
             }),
         },
     }))
+    if extraction is not None:
+        records = [extraction["buyer"], *extraction["suppliers"]]
+        known = {field for record in records for field, fact in record.items()
+                 if field != "source_id" and fact["value"] is not None}
+        required = {"part", "quoted_price", "price_basis_quantity", "currency", "delivery_terms", "payment_terms"}
+        for buyer_field, supplier_field in (("revision", "revision"), ("material_finish", "material_finish"),
+                                            ("required_delivery", "lead_time")):
+            if extraction["buyer"][buyer_field]["value"] is not None:
+                required.add(supplier_field)
+        missing = {field for supplier in extraction["suppliers"] for field in required
+                   if supplier[field]["value"] is None}
+        missing.update(field for inventory in (follow_up_context or {}).values() for issue in inventory["issues"]
+                       if issue["basis"] in {"missing", "unverified"} for field in issue["fields"])
+        evidence = " ".join(str(fact["evidence"] or "") for record in records for field, fact in record.items() if field != "source_id")
+        if re.search(r"\bMOQ\b|\bminimum\s+(?:order|purchase|quantity|qty)\b", evidence, re.I):
+            missing.add("moq")
+        issue = contract["json_schema"]["schema"]["properties"]["issues"]["items"]
+        issue["properties"]["fields"]["items"]["enum"] = sorted(known | missing)
+        issue["properties"]["basis"]["enum"].remove("missing")
+        if not extraction.get("validation_warnings"):
+            issue["properties"]["basis"]["enum"].remove("unverified")
+        if not any(candidate["basis"] == "ambiguous" for inventory in (follow_up_context or {}).values()
+                   for candidate in inventory["issues"]):
+            issue["properties"]["basis"]["enum"].remove("answered")
+        if missing:
+            missing_issue = copy.deepcopy(issue)
+            missing_issue["properties"]["basis"]["enum"] = ["missing"]
+            missing_issue["properties"]["fields"]["items"]["enum"] = sorted(missing)
+            contract["json_schema"]["schema"]["properties"]["issues"]["items"] = {"anyOf": [issue, missing_issue]}
+    return contract
 
 
 class ValidationError(ValueError):
@@ -325,8 +384,15 @@ def _validate_issues(proposed, sources, context, extraction):
             if extraction is not None:
                 record = extraction["buyer"] if owner == "buyer" else next(s for s in extraction["suppliers"] if s["source_id"] == owner)
                 unverified = (context or {}).get(owner, {}).get("validation_fields", [])
-                if issue["basis"] == "missing" and any(record[f]["value"] is not None for f in issue["fields"]):
-                    _fail("A missing-information issue cannot re-ask a term already answered in the extraction.")
+                answered = [f for f in issue["fields"] if record[f]["value"] is not None]
+                if issue["basis"] == "missing" and answered:
+                    _fail(f"Missing-information issue {issue_id} re-asks already answered fields: {', '.join(answered)}. "
+                          "Remove those fields; only genuinely missing terms may have basis missing. Use an evidence-backed ambiguity for uncertain quoted terms.")
+                if issue["basis"] == "missing" and "moq" in issue["fields"] and not re.search(
+                    r"\bMOQ\b|\bminimum\s+(?:order|purchase|quantity|qty)\b", sources["buyer"] + " " + sources[owner], re.I,
+                ):
+                    _fail(f"Issue {issue_id}: no buyer requirement or supplier condition establishes a need for MOQ clarification. "
+                          "An optional unstated MOQ alone is not a risk; keep it unknown and remove this issue and its links/questions.")
                 if issue["basis"] == "unverified" and not set(issue["fields"]) & set(unverified):
                     _fail("An unverified issue needs an actual validation warning.")
                 if issue["basis"] in ("ambiguous", "conflict") and not any(record[f]["value"] is not None for f in issue["evidence_fields"]):
@@ -417,7 +483,7 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
         data["recommendation"] = records
     for section in ("risks", "recommendation", "follow_up_questions"):
         items = data[section]
-        minimum = 0 if section == "follow_up_questions" else 1
+        minimum = 1 if section == "recommendation" else 0
         maximum = len(supplier_ids) if section == "recommendation" else max(40, 6 * len(sources))
         if not isinstance(items, list) or not minimum <= len(items) <= maximum:
             _fail(f"{section}: expected {minimum} to {maximum} items.")
@@ -444,8 +510,15 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
                 if not isinstance(fields, list) or not fields or any(not isinstance(field, str) or field not in (*BUYER_FIELDS, *SUPPLIER_FIELDS) for field in fields):
                     _fail("Follow-up fields must identify the terms the question addresses.")
                 refs = item["issue_ids"]
-                if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) or ref not in issues for ref in refs):
+                if not isinstance(refs, list) or not refs or any(not isinstance(ref, str) for ref in refs):
                     _fail("Follow-up issue_ids must identify known unresolved issues.")
+                unknown = [ref for ref in refs if ref not in issues]
+                if unknown:
+                    safe_ids = [ref if re.fullmatch(r"[A-Za-z0-9_]{1,100}", ref) else "<invalid ID>" for ref in unknown[:5]]
+                    known = [ref for ref, issue in issues.items() if issue["owner"] == item["owner"]][:12]
+                    _fail("Follow-up issue_ids must identify known unresolved issues. "
+                          f"Unknown: {', '.join(safe_ids)}. Known unresolved IDs for {item['owner']}: {', '.join(known) or '(none)'}. "
+                          "Copy a known ID, declare a grounded new issue in issues, or remove a question about an answered issue.")
                 if any(issues[ref]["owner"] != item["owner"] for ref in refs):
                     _fail("Buyer-wide and supplier-specific issues must stay with their resolution owner.")
                 item["severity"] = question_severity(item, issues)
@@ -455,9 +528,16 @@ def validate_analysis(data: dict, sources: dict[str, str], *, follow_up_context=
                     _fail("Recommendation must identify a supplier from this packet.")
                 if item["action"] not in ("advance", "hold", "do_not_advance"):
                     _fail("Recommendation action must be advance, hold, or do_not_advance.")
+                if extraction is not None and item["action"] == "advance":
+                    supplier = next(s for s in extraction["suppliers"] if s["source_id"] == item["supplier_id"])
+                    if supplier["quoted_price"]["value"] is None:
+                        _fail(f"{item['supplier_id']}: a unit price is not established. Use hold and ask for a firm price; do not advance an unpriced offer.")
                 refs = item["clarification_issue_ids"]
                 if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in issues for ref in refs):
-                    _fail("Recommendation clarification_issue_ids must identify known issues.")
+                    known = [ref for ref, issue in issues.items() if issue["owner"] in ("buyer", item["supplier_id"])][:12]
+                    _fail("Recommendation clarification_issue_ids must identify known issues. "
+                          f"Known unresolved IDs for {item['supplier_id']} or buyer: {', '.join(known) or '(none)'}. "
+                          "Copy a known ID or declare a grounded new issue first; do not invent conditions for answered fields.")
                 if any(issues[ref]["owner"] not in ("buyer", item["supplier_id"]) for ref in refs):
                     _fail("Recommendation conditions must belong to that supplier or the buyer.")
     recommendations = [item["supplier_id"] for item in data["recommendation"]]

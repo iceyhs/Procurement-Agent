@@ -54,6 +54,9 @@ leave the price fields null and preserve the original schedule in other_terms.
 Select a price tier only if the buyer's stated quantity and basis support it.
 Preserve other price tiers in other_terms. annual_volume is the explicitly stated
 annual tier for the selected price, not an invented order commitment.
+If the supplier has not quoted a price or its annual tier, leave annual_volume
+null even when the buyer's annual demand is known. Never cite a line containing
+only the part/revision as evidence for quantity or pricing fields.
 tooling_amount is a separately payable tooling charge, never a value already
 included in unit pricing. Preserve recurring tooling rates in tooling_terms rather
 than treating them as one-time amounts. deposit_amount is only the refundable
@@ -61,9 +64,17 @@ packaging/container deposit, never an advance-payment percentage or prepayment.
 MOQs and minimum releases are distinct: a minimum release is not an MOQ. Leave
 moq null unless the supplier explicitly states a minimum order quantity. Cite
 numeric values on lines that contain the actual amount, not a nearby heading.
+min_release likewise requires an explicit minimum threshold. Acceptance of a
+planned call-off size alone does not establish a minimum; leave it null.
 
 Capture conditions in price_qualification, tooling_terms, deposit_terms,
 delivery_terms, lead_time, payment_terms, validity, price_adjustment, other_terms.
+Read every source line independently for each supplier, including later caveats
+in informal replies. Never reuse another reply's line numbers/layout. Do not stop
+extracting after finding price and delivery; a later clause may qualify that price.
+price_adjustment includes future surcharges, variable supplements and escalation,
+even when the supplier does not call them price adjustments. Preserve any
+unspecified formula, ceiling or applicability there; do not invent its amount.
 Approximate pricing must remain approximate. Included/amortized tooling does not
 mean a stated zero tooling price or an automatic later unit-price reduction.
 Refundable deposits are not permanent cost. Missing freight is not zero freight.
@@ -74,156 +85,88 @@ Do not assume the RFQ concerns any particular material, process or type of part.
 """
 
 ANALYSIS_PROMPT = BOUNDARY + """
-Use the validated extraction, exact evidence, and harness calculations to prepare
-an issue-led analysis as JSON:
-{
-  "issues": [{"id": "supplier_1_approval", "owner": "supplier_1", "category": "delivery", "severity": "HIGH", "basis": "ambiguous", "reason": "...", "fields": ["lead_time"], "evidence_fields": ["lead_time", "other_terms"]}],
-  "risks": [{"text": "...", "source_ids": ["buyer", "supplier_1"]}],
-  "recommendation": {"supplier_1": {"action": "advance", "text": "...", "source_ids": ["supplier_1"], "clarification_issue_ids": ["supplier_1_approval"]}},
-  "follow_up_questions": [{"owner": "supplier_1", "priority": "important", "fields": ["lead_time"], "issue_ids": ["supplier_1_approval"], "text": "...", "source_ids": ["supplier_1"]}]
-}
-First assess the unresolved issues, then draft recommendations and questions from
-those issues. follow_up_context[owner].issues contains evidence-backed candidates
-with IDs, categories, severity floors, reasons and supporting field references.
-Reuse candidate IDs; you need not repeat candidates in your issues output. Add
-only novel unresolved issues or justified severity increases. Do not downgrade
-deterministic priorities. Categories: technical, cost, delivery, quantity, payment,
-validity, other. Severities in order: BLOCKER, HIGH, MEDIUM, LOW. BLOCKER prevents
-the stated next decision; HIGH materially affects evaluation; MEDIUM can be
-clarified in parallel; LOW is optional. A shared buyer BLOCKER to final comparison
-does not automatically prevent supplier shortlisting.
-Each novel issue needs basis (missing, unverified, ambiguous, or conflict),
-a specific reason explaining what is UNRESOLVED and
-evidence_fields referencing the owner's validated fields. Those references are
-resolved to original evidence by the harness. Unknown/unverified fields support
-only uncertainty, never a claim that the supplier omitted a term or that a discarded
-value is true. Do not invent an issue or a deadline. Do not re-ask a known MOQ,
-included tooling, explicit currency, or other sufficiently answered term. For
-amortization, ask about unresolved post-amortization pricing, not whether tooling
-is included if the quote already says it is. Qualitative ambiguity and novel
-commercial/technical conditions require your judgment and grounded explanation.
-If a heuristic ambiguous candidate is already sufficiently answered elsewhere in
-the validated terms, return that candidate with basis 'answered', explain why,
-and cite evidence_fields containing the answer. It will be removed from unresolved
-issues. Do not use this to dismiss a confirmed BLOCKER, a validation exclusion or
-missing requirement, and do not ask questions about dismissed candidates.
-Every question must reference issue_ids belonging to its owner. Buyer requirements
-remain buyer-owned; supplier questions may be conditional on those answers but
-must resolve that supplier's actual terms. Select the top 2-3 questions per supplier
-(maximum 3; fewer if there are fewer useful questions). Address all BLOCKER issues
-first, then HIGH, MEDIUM, LOW. Do not spend a question on a lower severity while a
-higher unresolved issue lacks coverage. Combine closely related issues in one
-question when appropriate; do not bury unrelated topics in one broad question.
-Every clarification condition in recommendation text MUST be recorded in
-clarification_issue_ids. Use an empty array only if the recommendation contains no
-specific unresolved condition. Every referenced condition needs a drafted question
-addressing that same issue ID, in the buyer section for shared requirements or
-the supplier section for its own terms. Conditions cannot refer to another supplier.
-Return exactly one recommendation per supplier, keyed by its source ID. Its action
-must be advance, hold, or do_not_advance. Advance means shortlist for further
-commercial/technical clarification, not approval to purchase. Explain the next
-step and conditions in text. Do not substitute a general supplier summary for a
-clear action. Keep risks and follow-up questions concise, focusing on material
-issues across all replies, with coverage based on the supplied data.
-Classify uncertainty by the decision it prevents, not by the number of empty fields:
-- Shared buyer gaps can block final technical/cost comparison or an award without
-  blocking a conditional shortlist. Missing buyer revision, destination or release
-  schedule alone is not a reason to stop every supplier.
-- Use advance for a plausible offer worth pursuing with stated clarification
-  conditions; non-blocking uncertainties can be resolved in parallel. Label
-  inferred currency and incomplete landed costs without discarding the offer.
-- Use hold when a supplier-specific material gap prevents a useful next assessment,
-  such as provisional pricing combined with unconfirmed tooling or startup timing.
-- Reserve do_not_advance for a concrete supplier-specific technical or commercial
-  blocker. Explain the quoted issue and what must change before progressing.
-  Shared buyer gaps alone do not justify this action. Do not force a balanced
-  distribution of actions or advance an offer that has a genuine blocker.
-Use only provided source IDs. Evaluate the buyer and EVERY supplier dynamically,
-regardless of the number or identities in the packet. Order risks and questions by decision
-impact. Owner is 'buyer' or a supplier source ID; text must be plain prose, not
-Markdown headings, HTML, tables, or an alternative report.
-The extraction may contain harness-generated validation_warnings. Those fields
-were excluded because their evidence was invalid. Treat them as unresolved,
-mention material exclusions, ask targeted verification questions, and do not
-reconstruct discarded claims or recommend based on them. Withheld amounts are
-unknown, not zero. Keep the shortlist conditional when validation is incomplete.
-Describe affected terms in buyer language; do not expose internal field paths,
-schema errors, harness operations, or validation mechanics in report prose.
-Calculation results also include currency_info, revision_blocker, revision_comparability_gap, and
-cost_comparability_note. Currency status 'inferred' is
-an explicit assumption, never a verified quote term. Retain nominal prices using
-that labelled assumption instead of excluding them. Do not describe inferred USD
-as supplier-confirmed, or treat it as a licence to compare landed costs.
-If revision_blocker is present, use do_not_advance and state that the supplier
-does not match the buyer-stated requirement. If revision_comparability_gap is
-present, supplier offers use different revision bases but the buyer requirement is
-unknown: technical comparison awaits buyer clarification, but the commercial
-shortlist is a separate judgment. A supplier may advance conditionally, be held,
-or be stopped for an explained material technical risk. An explicitly conflicting
-revision basis can justify do_not_advance until the required revision and that
-supplier's compliance/re-quote are confirmed. Do not turn every peer quote into
-a confirmed mismatch, and do not infer the required
-or current revision from alphabetical/numeric ordering or from any supplier.
-Attribute each revision to the supplier who quoted it. Neither a later-looking
-revision nor a delivered quote establishes the buyer's requirement or destination.
-Freight/duty exclusions make a price nominal rather than a landed-cost advantage.
-Generate ALL question text yourself from this case, not supplier names, fixed
-positions, or canned questions. The follow_up_context is an issue inventory:
-missing_fields, uncertain_fields, validation_fields, detected_risks, and
-comparability_gaps for each owner. Combine it with the actual validated terms to
-identify additional commercial/technical risks, including novel terms in
-other_terms. The inventory is not an exhaustive list or a command to ask about
-every empty field. Do not ask for information already clear unless a concrete
-conflict or decision risk justifies reconfirmation. Do not fabricate missingness.
-Each question must resolve a specific gap or risk and be addressed to the party
-who can resolve it. Assign priority blocking (state whether it prevents final
-comparison/award or progression of this supplier),
-important (material commercial clarification), or optional. Cover blocking risks
-first, keep one topic per question where possible, and avoid duplicates. If no
-useful clarification is needed for an owner, omit questions for that owner rather
-than inventing busywork. The renderer displays only your drafted questions.
-Each question must include fields naming the terms it addresses. For every
-blocking risk in follow_up_context.buyer.detected_risks, include a blocking
-buyer-owned question covering that field. Missing required drawing revision,
-destination, and release schedule must be established by the buyer when they
-block comparison. Supplier-only questions do not resolve these buyer decisions.
-Do not omit the buyer section in such cases or claim these inputs are known from
-supplier replies. Write the question text dynamically using this case's facts.
-Buyer questions resolve shared requirements; supplier questions resolve that
-supplier's commercial or technical terms. These are complementary: do not replace
-supplier follow-ups with buyer questions. For every hold or do_not_advance action,
-draft an actionable question to that supplier about the issue behind the action;
-for do_not_advance it must be blocking and cite that supplier's source. For an
-advance action with uncertain or unverified supplier terms, draft focused supplier
-clarifications as important unless a specific issue actually blocks progress.
-Use the quoted conditions to identify further questions: cost exclusions,
-provisional tooling/pricing, revision basis, transit/startup timing, price
-adjustments, amortization, payment exposure and similar terms only when relevant.
-Do not ask suppliers to invent missing buyer requirements. When buyer input is
-needed first, make the supplier question conditional on that confirmation.
+Analyze the validated extraction and calculations. Return only the JSON object
+required by response_format, with issues, risks, recommendation and follow_up_questions.
+Use every supplier source ID from this input. Never use example supplier identities.
 
-Distinguish quoted facts, interpretations, unknowns, and buyer decisions. Every
-consequential statement must be supported by the referenced sources. Quoted
-numbers may come from extracted facts; computed numbers must come from supplied
-calculation results. Do not perform additional arithmetic or FX conversions.
-Describe lead-time components separately rather than inventing full delivery
-durations. Quote price extensions are NOT landed cost. MOQ is not
-an annual volume requirement; annual demand is not an order/release schedule.
-Keep explicit and inferred currencies distinct. Do not automatically apply
-early-payment discounts, index adjustments, or amortization savings.
+Work in this order: identify genuinely unresolved issues; select their highest
+priority questions; then recommend an action with matching clarification IDs.
 
-Evaluate technical fit, cost coverage, delivery, and commercial risk without
-inventing priorities or weighted scores. Recommend who to pursue, conditionally;
-do not award business or declare an unconditional cheapest supplier from partial
-totals. If information cannot support a shortlist, explain the blockers instead.
-Identify missing requirements actually needed to assess this RFQ. Drawing revision,
-finish and tooling are relevant only when the item or buyer context makes them so;
-do not create questions or blockers solely because an optional field is null.
-No particular drawing revision or supplier delivery destination establishes a
-buyer requirement. Distinguish nominal production/shipping durations from full delivered
-lead time, startup from steady state, and stock at supplier from delivered service.
-Explain material unknowns, tooling amortization ambiguity, refundable deposit
-conditions, subcontracted processes, validity without an issue date, and payment
-exposure when applicable. Questions should resolve specific issues, not repeat
-generic requests. Do not describe questions as sent or supplier replies as received.
+Grounding:
+- Check each fact's value before declaring it missing. Non-null quoted prices,
+  explicit currencies, included tooling and stated terms are already answered.
+- Null means unknown, not zero. Do not fill unknown facts, invent costs or FX,
+  reconstruct excluded validation claims, or turn supplier capability into compliance.
+- missing_fields is an inventory, NOT a checklist. Unknown optional fields alone
+  do not create issues. In particular, do not ask for an unstated MOQ just because
+  it is null when no MOQ requirement/condition is stated; leave it unknown.
+- A clear offer with known price/basis/currency, included or priced tooling,
+  compatible release terms and complete delivery scope can have issues=[],
+  risks=[] and follow_up_questions=[]. Do not manufacture busywork.
+- Evidence references must be this owner's validated fields. Unverified fields
+  support a verification need, not a claim that the supplier omitted information.
+
+Issues and exact links:
+- follow_up_context[owner].issues supplies candidates and severity floors.
+  issue_ids_by_owner is a copyable index of existing IDs. Reuse them EXACTLY.
+- Declare every novel issue in issues BEFORE referencing its ID. Each issue has
+  id, owner, category, severity, basis, reason, fields and evidence_fields. An ID
+  starts with its owner plus underscore; inventing an ID alone does not create an issue.
+- Allowed bases: missing, unverified, ambiguous, conflict, answered. Use missing
+  only for null fields. Known but uncertain terms need ambiguous, not missing.
+- Only a heuristic ambiguous candidate already answered by quoted evidence may
+  be returned with basis answered. Never dismiss a confirmed blocker, validation
+  exclusion or missing requirement this way. Remove answered IDs from ALL links.
+- BLOCKER prevents supplier progression or the stated final decision. HIGH is
+  material; MEDIUM can be clarified in parallel; LOW is optional. Preserve floors.
+
+Decision boundaries:
+- If quoted_price is null, identify a HIGH missing quoted_price issue, ask for a
+  firm price, and HOLD that offer. Other good terms do not establish an absent price.
+- Approximate pricing, pending tooling and unresolved surcharges remain uncertain.
+  Variable future charges with unspecified formula/cap belong in a HIGH
+  price_adjustment issue. Ask about the commercial exposure; never estimate it.
+- Included tooling is not a numeric zero or an automatic post-amortization saving.
+  Ask about amortization/refund/index/payment terms only when genuinely unresolved.
+- Freight/duty exclusions, FOB or EXW prevent a confirmed landed-cost advantage.
+  Treat the price as nominal. Use hold or conditional advance to clarify delivered
+  costs; excluded logistics alone do NOT justify do_not_advance.
+- A lead time explicitly including production, transit and final delivery is
+  complete in scope. Do not re-ask that scope; separate unknown startup/approval
+  conditions can still require a question.
+- A calculation revision_blocker means a confirmed buyer-requirement mismatch:
+  use do_not_advance with a blocking supplier compliance/re-quote question.
+- A revision_comparability_gap means suppliers differ and the BUYER revision is
+  unknown. Never choose the required revision from supplier quotes or ordering.
+  Ask the BUYER which revision is required AND each affected SUPPLIER to confirm
+  compliance/re-quote once known. Use hold or conditional advance; shared buyer
+  uncertainty alone does not justify do_not_advance.
+- Buyer destination/release schedule similarly remain buyer-owned requirements.
+  Shared unknowns may block a final comparison while allowing a conditional shortlist.
+
+Questions and recommendations:
+- Author all question prose from the current facts. Do not use supplier templates.
+- Each question declares owner, fields, issue_ids, priority and source_ids. Its
+  issue IDs must belong to its owner; cite that owner. Buyer questions cannot
+  replace supplier-specific clarification questions.
+- Ask BLOCKER before HIGH, then MEDIUM, then LOW. At most three questions per
+  supplier; fewer when fewer useful issues exist. Combine closely related issues.
+  Never omit a higher priority issue to ask a lower one. Do not omit all HIGH
+  supplier questions just because the buyer also has a blocking question.
+- Return one recommendation per supplier: advance, hold or do_not_advance.
+  Advance is a conditional shortlist, not an award. Hold needs material clarification.
+  Do_not_advance needs a genuine supplier blocker and a blocking supplier question.
+- For advance, include EVERY material unresolved supplier issue ID in
+  clarification_issue_ids, plus relevant buyer dependencies, and draft questions
+  for each condition. A buyer-only condition does not cover that supplier's own
+  revision or commercial risk. Use [] only when no material conditions remain.
+- Recommendation condition IDs may belong only to that supplier or the buyer.
+  Never copy another supplier's IDs. Do not delete an unresolved condition merely
+  to silence a missing-question error; supply the question or choose hold.
+
+FINAL CHECK: all issue IDs exist and are unresolved; all material advancement
+conditions have owner-correct questions; known fields are not called missing;
+optional nulls do not create busywork. Risks summaries may be empty. Buyer-facing
+text is plain grounded prose with no schema, harness or validation/debug jargon.
+Questions are drafts, never messages already sent or supplier replies received.
 """

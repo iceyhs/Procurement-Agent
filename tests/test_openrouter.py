@@ -24,6 +24,7 @@ class OpenRouterTests(unittest.TestCase):
         self.assertEqual(request.get_header("Authorization"), "Bearer test-secret")
         self.assertEqual(json.loads(request.data)["model"], "test/model")
         self.assertNotIn("response_format", json.loads(request.data))
+        self.assertNotIn("temperature", json.loads(request.data))
         self.assertNotIn("provider", json.loads(request.data))
         self.assertNotIn("test-secret", repr(self.client))
 
@@ -36,6 +37,7 @@ class OpenRouterTests(unittest.TestCase):
         self.client.complete([], response_format=contract)
         body = json.loads(send.call_args.args[0].data)
         self.assertEqual(body["response_format"], contract)
+        self.assertEqual(body["temperature"], 0)
         self.assertTrue(body["response_format"]["json_schema"]["strict"])
         self.assertEqual(body["provider"], {"require_parameters": True})
 
@@ -61,6 +63,13 @@ class OpenRouterTests(unittest.TestCase):
         }).encode())
         with self.assertRaisesRegex(OpenRouterError, "output token limit"):
             self.client.complete([])
+
+    @patch("procurement_agent.openrouter.urlopen")
+    def test_invalid_provider_json_raises_controlled_error_without_retry(self, send):
+        send.return_value.__enter__.return_value = io.BytesIO(b"not JSON")
+        with self.assertRaisesRegex(OpenRouterError, "OpenRouter returned invalid JSON"):
+            self.client.complete([])
+        self.assertEqual(send.call_count, 1)
 
     @patch("procurement_agent.openrouter.urlopen")
     def test_rejects_malformed_provider_response(self, send):

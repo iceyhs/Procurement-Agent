@@ -37,6 +37,7 @@ class OpenRouterClient:
         }
         if response_format is not None:
             body["response_format"] = response_format
+            body["temperature"] = 0
             # Do not silently route structured reviews to endpoints that ignore
             # response_format. Chat and connection checks remain plain text.
             body["provider"] = {"require_parameters": True}

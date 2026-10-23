@@ -77,6 +77,63 @@ class IssuePriorityTests(unittest.TestCase):
         self.assertEqual(self.context["buyer"]["issues"], [])
         self.assertEqual(self.validate()["follow_up_questions"], [])
 
+    def test_empty_risk_summary_keeps_issue_and_question_validation(self):
+        self.analysis["risks"] = []
+        self.assertEqual(self.validate()["risks"], [])
+        issue_id = add_issue(self.analysis, "timing", "lead_time", "BLOCKER",
+                             "Quoted 12-week timing exceeds the buyer's 6-week requirement.",
+                             "Can you meet the required six-week delivery?", basis="conflict")
+        result = self.validate()
+        self.assertEqual(result["risks"], [])
+        self.assertIn(issue_id, {issue["id"] for issue in result["issues"]})
+        self.analysis["follow_up_questions"] = []
+        with self.assertRaisesRegex(ValidationError, "BLOCKER questions required"):
+            self.validate()
+
+    def test_optional_unstated_moq_needs_an_actual_requirement_or_condition(self):
+        self.text = self.text.replace("\nMOQ 100 pieces", "")
+        self.wire["suppliers"]["supplier_1"]["moq"] = fact()
+        self.packet = parse_packet(self.text)
+        self.extraction = validate_extraction(self.wire, self.packet.sources)
+        self.context = follow_up_context(self.extraction, calculate_amounts(self.extraction))
+        add_issue(self.analysis, "moq", "moq", "HIGH", "MOQ is unknown.",
+                  "What is the minimum order quantity?", basis="missing", category="quantity")
+        with self.assertRaisesRegex(ValidationError, "optional unstated MOQ alone is not a risk"):
+            self.validate()
+        self.text = self.text.replace("Release the full order at once", "Release the full order at once\nBuyer requires the minimum order quantity to be confirmed")
+        self.packet = parse_packet(self.text)
+        result = self.validate()
+        self.assertEqual(result["follow_up_questions"][0]["fields"], ["moq"])
+
+    def test_unpriced_offer_must_be_held_without_inventing_a_price(self):
+        self.text = self.text.replace("USD 5.20 per piece", "Unit price to follow; settlement currency USD")
+        for field in ("quoted_price", "price_basis_quantity"):
+            self.wire["suppliers"]["supplier_1"][field] = fact()
+        self.packet = parse_packet(self.text)
+        self.extraction = validate_extraction(self.wire, self.packet.sources)
+        self.context = follow_up_context(self.extraction, calculate_amounts(self.extraction))
+        with self.assertRaisesRegex(ValidationError, "do not advance an unpriced offer"):
+            self.validate()
+        self.analysis["recommendation"]["supplier_1"]["action"] = "hold"
+        add_issue(self.analysis, "price", "quoted_price", "HIGH", "A unit price is not established.",
+                  "Can you provide a firm unit price?", basis="missing", category="cost")
+        result = self.validate()
+        self.assertEqual(result["recommendation"][0]["action"], "hold")
+        self.assertIsNone(self.extraction["suppliers"][0]["quoted_price"]["value"])
+
+    def test_complete_delivery_scope_avoids_busywork_but_retains_startup_conditions(self):
+        complete = "4 weeks including production, transit and final delivery"
+        for timing, needs_question in ((complete, False), ("4 weeks production only", True),
+                                       ("4 weeks including production, transit but not final delivery", True),
+                                       (complete + " after sample approval", True)):
+            with self.subTest(timing=timing):
+                text = self.text.replace("12 weeks from release", timing)
+                wire = copy.deepcopy(self.wire)
+                wire["suppliers"]["supplier_1"]["lead_time"] = fact(timing, "L6")
+                extraction = validate_extraction(wire, parse_packet(text).sources)
+                issues = follow_up_context(extraction, calculate_amounts(extraction))["supplier_1"]["issues"]
+                self.assertEqual(any("lead_time" in issue["fields"] for issue in issues), needs_question)
+
     def test_provisional_cost_and_explicit_cost_exclusions_receive_priorities_and_evidence(self):
         supplier = self.extraction["suppliers"][0]
         supplier["price_qualification"] = fact("Indicative", "Indicative USD 5.20 per piece")
@@ -91,6 +148,16 @@ class IssuePriorityTests(unittest.TestCase):
             self.assertTrue(issue["reason"])
             self.assertTrue(issue["evidence_fields"])
         self.assertNotIn("supplier_1_moq", issues)
+
+    def test_freight_duty_exclusion_is_flagged_without_an_incoterm(self):
+        text = self.text.replace("DDP Denver", "Freight and duty excluded")
+        self.wire["suppliers"]["supplier_1"]["delivery_terms"] = fact("Freight and duty excluded", "L5")
+        extraction = validate_extraction(self.wire, parse_packet(text).sources)
+        context = follow_up_context(extraction, calculate_amounts(extraction))
+        issue = next(i for i in context["supplier_1"]["issues"] if i["id"] == "supplier_1_delivery_terms")
+        self.assertEqual(issue["severity"], "HIGH")
+        self.assertEqual(issue["category"], "cost")
+        self.assertIn("delivery_terms", issue["evidence_fields"])
 
     def test_severity_sorting_and_top_three_cap_preserve_blockers(self):
         add_issue(self.analysis, "validity", "validity", "LOW", "The issue date is unresolved.", "What date was this offer issued?")
@@ -154,8 +221,11 @@ class IssuePriorityTests(unittest.TestCase):
             self.validate()
 
     def test_an_answered_heuristic_candidate_does_not_generate_a_redundant_question(self):
-        self.text = self.text.replace("Lead time 12 weeks from release", "Lead time 4 weeks including production, transit and final delivery")
-        self.wire["suppliers"]["supplier_1"]["lead_time"] = fact("4 weeks including production, transit and final delivery", "L6")
+        self.text = self.text.replace("Lead time 12 weeks from release", "Lead time 4 weeks production")
+        self.text = self.text.replace("First-article approval required; approval duration unspecified",
+                                     "Transit and final delivery included in the quoted four weeks")
+        self.wire["suppliers"]["supplier_1"]["lead_time"] = fact("4 weeks production", "L6")
+        self.wire["suppliers"]["supplier_1"]["other_terms"] = fact("Transit and final delivery included in the quoted four weeks", "L8")
         self.packet = parse_packet(self.text)
         self.extraction = validate_extraction(self.wire, self.packet.sources)
         self.calculations = calculate_amounts(self.extraction)
@@ -163,6 +233,7 @@ class IssuePriorityTests(unittest.TestCase):
         candidate = copy.deepcopy(next(i for i in self.context["supplier_1"]["issues"] if i["id"] == "supplier_1_lead_time"))
         candidate["basis"] = "answered"
         candidate["reason"] = "The quote explicitly includes production, transit and final delivery in the four weeks."
+        candidate["evidence_fields"].append("other_terms")
         self.analysis["issues"] = [candidate]
         result = self.validate()
         self.assertEqual(result["issues"], [])

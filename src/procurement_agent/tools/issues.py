@@ -58,7 +58,15 @@ def issue_candidates(extraction, calculations, context):
         if re.search(r"\bFOB\b|\bEXW\b|freight.{0,25}dut(?:y|ies).{0,25}(?:not included|excluded)", delivery, re.I):
             add(owner, "delivery_terms", "cost", "HIGH", "The quoted scope does not establish delivered cost; obtain the remaining logistics costs after buyer destination confirmation.", "other_terms")
         lead = text("lead_time")
-        if re.search(r"production|once we.re running|after.{0,30}approval", lead, re.I):
+        complete_scope = re.search(
+            r"\b(?:including|includes?|covers?)\b.{0,80}\b(?:production|manufactur\w*)\b"
+            r".{0,60}\btransit\b.{0,60}\bfinal delivery\b",
+            supplier["lead_time"]["evidence"] or "", re.I | re.S,
+        )
+        if complete_scope and re.search(r"\b(?:not|exclud\w*|without|except)\b", complete_scope.group(), re.I):
+            complete_scope = None
+        conditional_start = re.search(r"once we.re running|after.{0,30}approval|pending|startup|start.up", lead, re.I)
+        if conditional_start or (re.search(r"production", lead, re.I) and not complete_scope):
             add(owner, "lead_time", "delivery", "HIGH", "The quoted duration has a production, startup or approval condition; full delivery timing needs clarification.")
         buyer = extraction["buyer"]
         if buyer["quantity_basis"]["value"] == "order" and buyer["quantity"]["value"] and supplier["moq"]["value"]:

@@ -112,10 +112,13 @@ class ReviewHarness:
         state.analysis = self._request(
             state, ANALYSIS_PROMPT,
             {"extraction": analysis_extraction, "calculations": state.calculations,
-             "follow_up_context": questions_context},
+             "follow_up_context": questions_context,
+             "issue_ids_by_owner": {owner: [issue["id"] for issue in inventory["issues"]]
+                                    for owner, inventory in questions_context.items()}},
             lambda data, sources: validate_analysis(data, sources, follow_up_context=questions_context, extraction=state.extraction),
             max_tokens=min(16000, max(8000, 1200 * len(state.packet.suppliers))), stage="Analysis",
-            response_format=analysis_format(list(state.packet.sources)),
+            response_format=analysis_format(list(state.packet.sources), extraction=state.extraction,
+                                            follow_up_context=questions_context),
             partial_validator=lambda data, sources: validate_analysis(
                 data, sources, follow_up_context=questions_context, extraction=state.extraction, allow_incomplete=True,
             ),

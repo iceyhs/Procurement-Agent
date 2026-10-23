@@ -69,9 +69,14 @@ Alternatively, use the installed command after exporting the configuration:
 .venv/bin/procurement-agent review quote_packet.txt --output report.md
 ```
 
-The default output is `report.md` in the current directory. Existing reports are
-preserved unless you pass `--force`. A failed review leaves the previous report
-intact; output cannot be the input file. Successful runs print the output path.
+The default outputs are `report.md` and `report.pdf` in the current directory.
+After saving Markdown, `review` automatically exports the PDF from that file,
+without additional model calls. A custom `-o reviews/buyer.md` also creates
+`reviews/buyer.pdf`. Existing outputs are preserved unless you pass `--force`;
+output collisions are checked before model calls, and neither output can replace
+the input. A failed model review leaves previous reports intact. If PDF export
+fails, the saved Markdown is retained, any previous PDF is preserved, and the
+command reports the export error with a nonzero exit status. Successful runs print both output paths.
 Progress is flushed to stderr before each model request and during validation,
 calculation, and saving, so a running request does not appear idle. Ctrl+C cancels
 the local run with exit code 130. A network timeout is reported explicitly.
@@ -111,6 +116,23 @@ with the number of replies up to 16,000 tokens; oversized responses fail clearly
 rather than producing an incomplete comparison.
 
 ### Report
+
+The saved Markdown remains the source artifact; `review` creates its reviewer PDF
+automatically. To retry PDF export or export an existing report without re-running
+the model:
+
+```bash
+.venv/bin/python main.py pdf report.md -o report.pdf
+# Add --force to replace an existing PDF after a successful export.
+```
+
+PDF export requires Pandoc and XeLaTeX. On macOS install Pandoc with
+`brew install pandoc` and a TeX distribution such as MacTeX. On Debian/Ubuntu use
+`sudo apt-get install pandoc texlive-xetex texlive-latex-extra`.
+The exporter typesets the existing Markdown locally; it
+makes no model calls and does not change `report.md`. Landscape tables have
+repeated headers, and numbered source excerpts appear at the end. All four
+sections, qualifications, questions, and evidence are retained.
 
 1. **Normalized supplier comparison** — buyer requirements, quote terms, price
    normalization, conditional quantity extensions, and exact source excerpts.

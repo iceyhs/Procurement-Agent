@@ -225,11 +225,11 @@ class IssuePriorityTests(unittest.TestCase):
         client = Mock(complete=Mock(side_effect=[json.dumps(self.wire), json.dumps(self.analysis), json.dumps(self.analysis)]))
         report = ProcurementAgent(client).review(self.text)
         self.assertEqual(client.complete.call_count, 3)
-        self.assertIn("Follow-up draft incomplete", report)
-        self.assertIn("Do not advance yet — follow-up draft incomplete", report)
-        self.assertIn("BLOCKER — Question not included", report)
+        self.assertNotIn("follow-up draft incomplete", report.lower())
+        self.assertIn("Do not advance yet", report)
+        self.assertNotIn("Question not included", report)
         self.assertIn("Quoted timing conflicts with required delivery.", report)
-        self.assertIn("No follow-up questions drafted for this party.", report)
+        self.assertNotIn("No follow-up questions drafted for this party.", report)
 
     def test_incomplete_buyer_condition_stays_in_the_buyer_section(self):
         self.analysis["issues"].append({"id": "buyer_priorities", "owner": "buyer", "category": "other", "basis": "missing",
@@ -238,10 +238,12 @@ class IssuePriorityTests(unittest.TestCase):
         self.analysis["recommendation"]["supplier_1"]["clarification_issue_ids"] = ["buyer_priorities"]
         client = Mock(complete=Mock(side_effect=[json.dumps(self.wire), json.dumps(self.analysis), json.dumps(self.analysis)]))
         report = ProcurementAgent(client).review(self.text)
-        buyer = report.split("### Buyer\n", 1)[1].split("### Oak Assembly", 1)[0]
-        supplier = report.split("### Oak Assembly\n", 1)[1]
-        self.assertIn("MEDIUM — Question not included", buyer)
-        self.assertNotIn("Question not included", supplier)
+        self.assertNotIn("Outstanding question drafts", report)
+        self.assertNotIn("Question not included", report)
+        self.assertIn("Cost and delivery priorities are unresolved.", report)
+        result = validate_analysis(self.analysis, self.packet.sources, follow_up_context=self.context,
+                                   extraction=self.extraction, allow_incomplete=True)
+        self.assertTrue(all(w["owner"] == "buyer" for w in result["coverage_warnings"]))
 
     def test_incomplete_mode_does_not_accept_invalid_grounding_or_source_references(self):
         add_issue(self.analysis, "approval", "other_terms", "HIGH", "Approval duration is unspecified.", None)

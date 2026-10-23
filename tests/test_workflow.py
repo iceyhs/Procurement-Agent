@@ -232,6 +232,23 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual(result["suppliers"][0]["source_id"], "supplier_1")
         self.assertIsNone(result["buyer"]["revision"]["value"])
 
+    def test_supported_grouped_annual_tier_is_retained_without_a_validation_risk(self):
+        for quantity in ("60000", "60,000"):
+            wire = model_extraction()
+            wire["suppliers"]["supplier_2"]["annual_volume"] = fact(quantity, "60,000 pcs EUR 3.92 / pc")
+            data = validate_extraction(wire, self.sources, allow_partial=True)
+            self.assertEqual(data["suppliers"][1]["annual_volume"]["value"], "60000")
+            self.assertFalse(any(w["source_id"] == "supplier_2" and w["field"] == "annual_volume"
+                                 for w in data.get("validation_warnings", [])))
+            calculations = calculate_amounts(data)
+            self.assertEqual(calculations[1]["quantity_price_extension"], "235200.00")
+            self.assertNotIn("annual_volume", follow_up_context(data, calculations)["supplier_2"]["validation_fields"])
+            report = render_report(data, calculations, validate_analysis(model_analysis(), self.sources))
+            self.assertIn("| Nordkant Prazisionsteile GmbH | **Shortlist / advance with clarification**", report)
+        wire["suppliers"]["supplier_2"]["annual_volume"]["value"] = "65,000"
+        with self.assertRaisesRegex(ValidationError, "numeric value must appear"):
+            validate_extraction(wire, self.sources)
+
     def test_named_records_and_line_citations_resolve_to_original_text(self):
         wire = model_extraction()
         original = copy.deepcopy(wire)
@@ -507,8 +524,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(client.complete.call_count, 3)
         self.assertIn("Analysis: 2 supplier follow-up coverage notes; see data-quality notes.", events)
         self.assertIn("Data-quality notes", report)
-        self.assertIn("Review follow-up coverage for Price currency, Tooling currency", report)
-        self.assertIn("Review follow-up coverage for Selected annual volume tier", report)
+        self.assertNotIn("Review follow-up coverage", report)
+        self.assertNotIn("failed evidence validation", report)
         for supplier in ("Tri-State Metalcraft", "Nordkant Prazisionsteile GmbH"):
             self.assertIn(f"| {supplier} | **Shortlist / advance with clarification**", report)
         payload = json.loads(client.complete.call_args_list[2].args[0][1]["content"])
@@ -580,12 +597,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(client.complete.call_count, 4)
         self.assertIn("Recommendation/follow-up inconsistency", client.complete.call_args_list[3].args[0][-1]["content"])
         self.assertTrue(any("Analysis incomplete" in event for event in events))
-        self.assertIn("**Follow-up draft incomplete:**", report)
-        self.assertIn("| Tri-State Metalcraft | **Shortlist / advance with clarification — follow-up draft incomplete**", report)
+        self.assertNotIn("follow-up draft incomplete", report.lower())
+        self.assertNotIn("Outstanding question drafts", report)
+        self.assertNotIn("Required follow-up coverage", report)
+        self.assertIn("| Tri-State Metalcraft | **Shortlist / advance with clarification**", report)
         self.assertIn("| Nordkant Prazisionsteile GmbH | **Shortlist / advance with clarification**", report)
         section = report.split("### Tri-State Metalcraft\n", 1)[1].split("### ", 1)[0]
-        self.assertIn("HIGH — Question not included", section)
-        self.assertIn("quoted scope does not establish delivered cost", section)
+        self.assertNotIn("Question not included", section)
+        self.assertIn("quoted scope does not establish delivered cost", report)
         self.assertIn("Can you confirm the unit price currency?", section)
         self.assertNotIn("What freight", section)
         self.assertNotIn("Recommendation/follow-up inconsistency", report)
@@ -633,8 +652,9 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "report.md"
             client = self.client(json.dumps(self.extraction), json.dumps(self.analysis))
-            with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client), patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as progress:
+            with patch("procurement_agent.cli.OpenRouterClient.from_env", return_value=client), patch("procurement_agent.cli.export_pdf") as export, patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO) as progress:
                 self.assertEqual(main(["review", str(EXAMPLE), "-o", str(output)]), 0)
+                export.assert_called_once_with(output, output.with_suffix(".pdf"), False)
                 self.assertIn("Extraction: waiting", progress.getvalue())
                 self.assertIn("Saving", progress.getvalue())
             previous = output.read_text()
@@ -660,8 +680,9 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn("Cancelled", stderr.getvalue())
 
     @patch.dict("os.environ", {"OPENROUTER_API_KEY": "test-secret", "OPENROUTER_MODEL": "test/model"})
+    @patch("procurement_agent.cli.export_pdf")
     @patch("procurement_agent.openrouter.urlopen")
-    def test_cli_through_real_adapter_with_mocked_http(self, send):
+    def test_cli_through_real_adapter_with_mocked_http(self, send, export):
         def response_for(content):
             response = Mock()
             response.__enter__ = Mock(return_value=io.BytesIO(json.dumps({
@@ -674,6 +695,7 @@ class WorkflowTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch("sys.stdout", new_callable=io.StringIO), patch("sys.stderr", new_callable=io.StringIO):
             output = Path(directory) / "report.md"
             self.assertEqual(main(["review", str(EXAMPLE), "--output", str(output)]), 0)
+            export.assert_called_once_with(output, output.with_suffix(".pdf"), False)
             self.assertIn("## 4. Follow-up questions", output.read_text())
             self.assertEqual(send.call_count, 2)
             for index, call in enumerate(send.call_args_list):
@@ -970,11 +992,10 @@ class DynamicFollowUpTests(unittest.TestCase):
         client = Mock(complete=Mock(side_effect=[json.dumps(model_extraction()), json.dumps(analysis)]))
         report = ProcurementAgent(client).review(EXAMPLE.read_text())
         self.assertEqual(client.complete.call_count, 2)
-        self.assertIn("Data-quality notes", report)
-        self.assertIn("Review follow-up coverage for Price currency, Tooling currency", report)
+        self.assertNotIn("Data-quality notes", report)
+        self.assertNotIn("Review follow-up coverage", report)
         self.assertIn("| Tri-State Metalcraft | **Shortlist / advance with clarification**", report)
-        section = report.split("### Tri-State Metalcraft\n", 1)[1].split("### ", 1)[0]
-        self.assertIn("No follow-up questions drafted for this party.", section)
+        self.assertNotIn("### Tri-State Metalcraft\n", report)
 
     def test_advisory_notes_do_not_allow_malformed_or_ungrounded_analysis(self):
         data = extracted_example()
@@ -1027,7 +1048,7 @@ class DynamicFollowUpTests(unittest.TestCase):
         self.assertLess(report.index("Blocking topic?"), report.index("Important topic?"))
         self.assertLess(report.index("Important topic?"), report.index("Optional topic?"))
         self.assertEqual(report.count("Blocking topic?"), 1)
-        self.assertIn("No follow-up questions drafted for this party.", report)
+        self.assertNotIn("No follow-up questions drafted for this party.", report)
         self.assertNotIn("Which drawing revision", report)
         self.assertNotIn("What freight and duty", report)
 
@@ -1160,7 +1181,7 @@ class VariableSupplierCountTests(unittest.TestCase):
         report = ProcurementAgent(client).review(text)
         self.assertEqual(client.complete.call_count, 2)
         self.assertIn("| Variable Vendor 1 | **Shortlist / advance with clarification**", report)
-        self.assertIn("No follow-up questions drafted for this party.", report)
+        self.assertNotIn("No follow-up questions drafted for this party.", report)
 
     def test_a_different_product_quantity_currency_and_order_basis_are_input_driven(self):
         text, extraction, analysis = variable_supplier_fixture(6, part="SEAL-920", quantity=1200, revision=None, currency="EUR", annual=False)

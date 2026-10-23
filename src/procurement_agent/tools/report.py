@@ -41,9 +41,6 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
     names.update({item["source_id"]: item["supplier"]["value"] or item["source_id"] for item in suppliers})
     amounts = {item["source_id"]: item for item in calculations}
     issues = {item["id"]: item for item in analysis["issues"]}
-    coverage_warnings = analysis.get("coverage_warnings", [])
-    incomplete_suppliers = {supplier_id for warning in coverage_warnings for supplier_id in warning["supplier_ids"]}
-    incomplete_suppliers.update(w["owner"] for w in coverage_warnings if w["owner"] != "buyer")
     evidence = {}
 
     def fact(source_id, field, value):
@@ -58,9 +55,6 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         return f"{_escape(value['value'])}[^{key}]"
 
     lines = ["# Procurement report", "", f"Comparing {len(suppliers)} supplier replies for this RFQ.", ""]
-    if coverage_warnings:
-        lines += ["**Follow-up draft incomplete:** Some unresolved issues or recommendation conditions lack drafted questions. "
-                  "Review the flagged items in section 4 before using the follow-ups. These conditions remain unresolved.", ""]
     if validation_warnings:
         lines += ["**Data quality:** Some terms need confirmation. Unverified values are excluded "
                   "from affected totals; see the concise notes below.", ""]
@@ -86,6 +80,13 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         "lead_time": "Lead time / starting condition", "payment_terms": "Payment",
         "validity": "Price validity", "price_adjustment": "Price adjustment", "other_terms": "Other terms",
     }
+
+    def issue_reason(issue):
+        if issue["basis"] == "unverified":
+            terms = ", ".join(labels.get(field, field.replace("_", " ")) for field in issue["fields"])
+            return f"Confirm {terms} against the supplier's quote before relying on these terms."
+        return issue["reason"]
+
     for field, label in labels.items():
         cells = []
         for item in suppliers:
@@ -171,11 +172,10 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                 if evidence_item["value"] is not None:
                     support.append(f"{_escape(label)}[^{source_id}-{field}]")
                 else:
-                    status = "Unverified" if (source_id, field) in excluded else "Unknown in extraction"
+                    status = "Needs confirmation" if (source_id, field) in excluded else "Not established"
                     support.append(f"{_escape(label)}: {status}")
-            lines.append(f"| **{issue['severity']}** / {_escape(issue['category'])} | {_escape(names[issue['owner']])} | {_escape(issue['reason'])} | {'; '.join(support)} |")
-    follow_up_warnings = analysis.get("follow_up_warnings", [])
-    if validation_warnings or follow_up_warnings:
+            lines.append(f"| **{issue['severity']}** / {_escape(issue['category'])} | {_escape(names[issue['owner']])} | {_escape(issue_reason(issue))} | {'; '.join(support)} |")
+    if validation_warnings:
         lines += ["", "### Data-quality notes", ""]
         for source_id, name in names.items():
             fields = sorted({labels.get(warning["field"], warning["field"].replace("_", " "))
@@ -184,11 +184,6 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                 lines.append(f"- **{_escape(name)}:** Confirm {_escape(', '.join(fields))}. "
                              "These terms could not be verified from the reply; related totals may be unavailable. "
                              "This does not establish that the supplier omitted them.")
-        for warning in follow_up_warnings:
-            fields = ", ".join(labels.get(field, field.replace("_", " ")) for field in warning["fields"])
-            lines.append(f"- **{_escape(names[warning['source_id']])}:** Review follow-up coverage for {_escape(fields)}. "
-                         "Drafted questions may need additions; these terms still need confirmation. "
-                         "Any shortlisting remains conditional.")
     lines += ["", "## 3. Shortlist / recommendation", "",
               "Advance means pursue clarification or a firm offer, not approve a purchase. "
               "Shared buyer unknowns can prevent a final comparison while allowing conditional shortlisting. "
@@ -205,28 +200,16 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
         reason = blocker or decision["text"]
         if revision_gap and not blocker:
             reason += " " + revision_gap
-        conditions = [issues[ref]["reason"] for ref in decision["clarification_issue_ids"]]
+        conditions = [issue_reason(issues[ref]) for ref in decision["clarification_issue_ids"]]
         if conditions:
             reason += " Clarifications: " + " ".join(conditions)
-        action_label = action_labels[action]
-        if source_id in incomplete_suppliers:
-            action_label += " — follow-up draft incomplete"
-            reason += " Review the uncovered follow-up items in section 4; these conditions are not resolved."
-        lines.append(f"| {_escape(names[source_id])} | **{action_label}** | {_escape(reason)} |")
+        lines.append(f"| {_escape(names[source_id])} | **{action_labels[action]}** | {_escape(reason)} |")
     lines += ["", "## 4. Follow-up questions", "", "Drafts only; no messages have been sent.", ""]
     for owner, name in names.items():
-        lines += [f"### {_escape(name)}", ""]
-        owner_warnings = [w for w in coverage_warnings if w["owner"] == owner]
-        if owner_warnings:
-            lines += ["**Outstanding question drafts:**", ""]
-            pending_ids = {ref for warning in owner_warnings for ref in warning["issue_ids"]}
-            for ref in sorted(pending_ids, key=lambda ref: SEVERITIES.index(issues[ref]["severity"])):
-                issue = issues[ref]
-                lines.append(f"- **{issue['severity']} — Question not included:** {_escape(issue['reason'])}")
-            if any(not warning["issue_ids"] for warning in owner_warnings):
-                lines.append("- Required follow-up coverage for this recommendation needs review.")
-            lines.append("")
         questions = [item for item in analysis["follow_up_questions"] if item["owner"] == owner]
+        if not questions:
+            continue
+        lines += [f"### {_escape(name)}", ""]
         seen = set()
         questions = sorted(questions, key=lambda q: SEVERITIES.index(q.get("severity") or question_severity(q, issues)))
         for severity, label in (("BLOCKER", "Resolve first — BLOCKER"), ("HIGH", "HIGH — Commercial clarification"),
@@ -243,8 +226,6 @@ def render_report(extraction: dict, calculations: list[dict], analysis: dict) ->
                 lines += [f"**{label}:**", ""]
                 assessment(selected)
                 lines.append("")
-        if not questions:
-            lines.append("No follow-up questions drafted for this party.")
         lines.append("")
     lines += [
         "Confirm assumptions, technical compliance and unresolved costs against the original quotes before a purchasing decision.", "",

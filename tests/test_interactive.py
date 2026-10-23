@@ -49,8 +49,9 @@ class InteractiveTests(unittest.TestCase):
             packet = root / "quote_packet.txt"
             packet.write_text("BRK-4471-A\n60,000 units\n===PACKET===\nSupplier reply", encoding="utf-8")
             output = root / "report.md"
-            with patch("main.__file__", str(root / "main.py")), patch("sys.stderr", new_callable=io.StringIO):
+            with patch("main.__file__", str(root / "main.py")), patch("procurement_agent.cli.export_pdf") as export, patch("sys.stderr", new_callable=io.StringIO):
                 self.assertEqual(chat.main(["review", str(packet), "-o", str(output)]), 0)
+                export.assert_called_once_with(output, output.with_suffix(".pdf"), False)
             self.assertEqual(output.read_text(), "# Procurement report\n")
             self.assertEqual(agent.call_args.args[0].model, "test/model")
             agent.return_value.review.assert_called_once_with(packet.read_text())

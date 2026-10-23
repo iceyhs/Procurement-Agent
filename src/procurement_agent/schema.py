@@ -185,6 +185,11 @@ def _fact(value, field, source, location):
             _fail(f"{location}: evidence must occur in this source; copy an exact excerpt without added labels.")
         value["evidence"] = match.group()
     if field in NUMERIC_FIELDS:
+        # Grouping in an annual tier is formatting, not a different quantity.
+        # The canonical number must still occur in this fact's cited evidence.
+        if field == "annual_volume" and re.fullmatch(r"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,6})?", data):
+            data = data.replace(",", "")
+            value["value"] = data
         if not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,6})?", data):
             _fail(f"{location}: use an unsigned decimal string without currency or commas.")
         amount = Decimal(data)
